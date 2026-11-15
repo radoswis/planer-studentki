@@ -47,6 +47,9 @@ textarea{min-height:70px;resize:vertical}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin-bottom:6px}
 .empty{color:#999;font-size:14px;padding:6px 0}
 .srow{display:flex;gap:6px;margin:5px 0}.srow input[type=text]{flex:1}.srow input[type=date]{width:130px}
+.combo{position:relative}.combo input{padding-right:42px}.cbtn{position:absolute;right:4px;top:4px;bottom:4px;width:36px;border:0;background:none;font-size:16px;color:#777}
+.dd{position:absolute;left:0;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid #ddd9cf;border-radius:10px;max-height:240px;overflow-y:auto;z-index:10;box-shadow:0 6px 18px rgba(0,0,0,.12)}
+.dd div{padding:11px 12px;display:flex;align-items:center;gap:10px;border-top:1px solid #f0ede5}.dd div:first-child{border-top:0}.dd i{width:14px;height:14px;border-radius:50%;flex-shrink:0}
 .hint{font-size:12px;color:#999;margin-top:8px}
 </style>
 </head>
@@ -62,7 +65,7 @@ textarea{min-height:70px;resize:vertical}
 <section id="list" hidden>
   <h1 id="fHead">Nowe zadanie</h1>
   <label>Nazwa zadania</label><input id="fTitle" placeholder="np. Przygotowanie na zjazd">
-  <label>Przedmiot</label><input id="fSub" placeholder="np. Psychologia poznawcza" list="subs"><datalist id="subs"></datalist>
+  <label>Przedmiot</label><div class="combo"><input id="fSub" placeholder="np. Psychologia poznawcza" autocomplete="off"><button type="button" class="cbtn" onclick="toggleSubs()">▾</button><div id="subs" class="dd" hidden></div></div>
   <label>Co dokładnie jest do zrobienia</label><textarea id="fDesc" placeholder="Pisz swobodnie, np.: przeczytać rozdz. 3–5, prezentacja na 10 min. W środy pracuję, w weekendy nie mam czasu."></textarea>
   <label>Deadline</label><input id="fDl" type="date">
   <label>Kolor przedmiotu</label><div class="colors" id="fCol"></div>
@@ -77,7 +80,7 @@ textarea{min-height:70px;resize:vertical}
 <script>
 // Adres Workera z AI (opcjonalnie). Pusty = lokalny algorytm.
 const AI_URL = '/api/plan';
-const COLORS=[['#d9ede3','#0f5a44'],['#dce9f7','#0c447c'],['#f6dde6','#72243e'],['#f8e8cc','#633806'],['#e6e3f8','#3c3489'],['#f3e0d8','#712b13']];
+const COLORS=[['#d9ede3','#0f5a44'],['#dce9f7','#0c447c'],['#f6dde6','#72243e'],['#f8e8cc','#633806'],['#e6e3f8','#3c3489'],['#f3e0d8','#712b13'],['#d6eef2','#0b5563'],['#e9f2d2','#3b5a0e'],['#fbe0d3','#8a2e0a'],['#f0dcf2','#6a1f72'],['#fff2c2','#6b5300'],['#e4e4e1','#3a3a37'],['#d9e2fb','#1f3a8a'],['#fbd9d9','#8a1c1c'],['#d5f2e0','#14532d'],['#f7e3f0','#831843']];
 const DAYS=['Nd','Pon','Wt','Śr','Czw','Pt','Sob'];
 let S, week=0, selCol=0;
 
@@ -143,7 +146,7 @@ async function addTask(){
   const title=fTitle.value.trim(),sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
   if(!sub||!desc||!dl)return alertMsg('Uzupełnij przynajmniej przedmiot, opis i deadline.');
   if(dl<=today())return alertMsg('Deadline musi być w przyszłości.');
-  S.colors[sub]=S.colors[sub]??selCol;
+  S.colors[sub]=selCol;
   const t={id:Date.now(),title:title||sub,subject:sub,desc,deadline:dl};
   const b=document.querySelector('#list .btn');b.textContent='Planuję z AI…';b.disabled=true;
   t.steps=await plan(t);
@@ -213,7 +216,6 @@ function render(){
     const header=t.title&&t.title!==t.subject?`<b>${t.title}</b> <small>· ${t.subject}</small>`:`<b>${t.subject}</b>`;
     return`<div class="card" style="background:${bg};color:${fg}"><div>${header}<br><small>${t.desc}</small><br><small>${d}/${t.steps.length} kroków · do ${t.deadline.slice(8)}.${t.deadline.slice(5,7)}</small></div><span style="white-space:nowrap"><button class="x" style="color:${fg}" onclick="edit(${t.id})">✎</button><button class="x" style="color:${fg}" onclick="del(${t.id})">✕</button></span></div>`
   }).join(''):'<div class="empty">Dodaj pierwsze zadanie powyżej.</div>';
-  subs.innerHTML=Object.keys(S.colors).map(s=>`<option value="${s}">`).join('');
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
 }
 function shiftWeek(n){week+=n;render();days.style.transform='';days.classList.remove('inL','inR');void days.offsetWidth;days.classList.add(n>0?'inL':'inR')}
@@ -264,6 +266,16 @@ function endDrag(){
 }
 
 function tab(x){cal.hidden=x!=='cal';list.hidden=x!=='list';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list')}
+function showSubs(all){
+  const q=all?'':fSub.value.trim().toLowerCase(),L=Object.keys(S.colors).filter(s=>s.toLowerCase().includes(q)).sort((a,b)=>a.localeCompare(b,'pl'));
+  subs.innerHTML=L.map(s=>`<div data-s="${s.replace(/"/g,'&quot;')}"><i style="background:${COLORS[S.colors[s]][0]};border:2px solid ${COLORS[S.colors[s]][1]}"></i>${s}</div>`).join('');
+  subs.hidden=!L.length;
+}
+function toggleSubs(){if(subs.hidden){showSubs(true);fSub.focus()}else subs.hidden=true}
+fSub.addEventListener('focus',()=>showSubs(true));
+fSub.addEventListener('input',()=>showSubs(false));
+subs.addEventListener('pointerdown',e=>{const d=e.target.closest('[data-s]');if(!d)return;e.preventDefault();fSub.value=d.dataset.s;selCol=S.colors[fSub.value];subs.hidden=true;render()});
+document.addEventListener('pointerdown',e=>{if(!e.target.closest('.combo'))subs.hidden=true});
 fSub.addEventListener('change',()=>{if(S.colors[fSub.value]!=null){selCol=S.colors[fSub.value];render()}});
 
 function demo(){
