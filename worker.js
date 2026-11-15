@@ -8,15 +8,27 @@ export default {
       const { title, subject, desc, deadline, today, busy = {} } = await req.json();
       if (!subject || !desc || !/^\d{4}-\d{2}-\d{2}$/.test(deadline || '')) return json({ error: 'bad input' }, 400);
       const last = addD(deadline, -1);
-      const taskLine = title ? `Zadanie: ${title}\n` : '';
-      const prompt = `Jesteś planerem nauki dla studentki psychologii (wzrokowiec).
-${taskLine}Przedmiot: ${subject}
-Do zrobienia: ${desc}
-Dziś: ${today}. Deadline (zjazd): ${deadline}. Kroki planuj od ${today} do ${last} włącznie.
-Dni już zajęte (data: liczba kroków): ${JSON.stringify(busy)} – unikaj ich przeciążania.
-Zasady: rozbij pracę na konkretne kroki po 1–2 h (np. "Czytanie fragmentu 1", "Slajdy 1–8"), nauka i powtórka do egzaminu na końcu, max 2 kroki dziennie z tego zadania, krótkie polskie nazwy.
-Odpowiedz WYŁĄCZNIE JSON: {"steps":[{"text":"...","date":"RRRR-MM-DD"}]}`;
-      const r = await env.AI.run(MODEL, { messages: [{ role: 'user', content: prompt }], max_tokens: 800 });
+      const WD = ['niedziela', 'poniedziałek', 'wtorek', 'środa', 'czwartek', 'piątek', 'sobota'];
+      const cal = [];
+      for (let d = today; d <= last && cal.length < 60; d = addD(d, 1)) cal.push(`${d} ${WD[new Date(d + 'T12:00:00Z').getUTCDay()]}${busy[d] ? ` (zajęte: ${busy[d]})` : ''}`);
+      const system = `Jesteś planerem nauki dla studentki psychologii (wzrokowiec). Układasz jej harmonogram pracy nad zadaniem przed zjazdem/terminem.
+Opis zadania pisze sama studentka, zwykłym językiem – jak do asystenta. Może zawierać: co trzeba zrobić, ile tego jest, co jest trudne, oraz PROŚBY dotyczące planu (np. "nie w weekendy", "w środy mam pracę", "zacznij od rozdziału 4", "krótsze sesje", "powtórka dzień przed"). Prośby studentki są ważniejsze niż zasady domyślne – zawsze je respektuj.
+Zasady domyślne (gdy studentka nie prosi inaczej):
+- konkretne kroki po 1–2 h, nazwane tak, by wiadomo było co zrobić (np. "Czytanie rozdz. 3 + notatki", "Slajdy 1–8", "Fiszki z pojęć"),
+- najpierw materiał, potem nauka/przygotowanie, na końcu powtórka (dzień–dwa przed terminem),
+- max 2 kroki dziennie z tego zadania, rozkładaj równomiernie, omijaj dni oznaczone jako zajęte jeśli to możliwe,
+- trudniejsze rzeczy daj wcześniej i więcej czasu,
+- nazwy kroków po polsku, max 60 znaków, bez dat w nazwie.
+Używaj WYŁĄCZNIE dat z podanej listy dni. Odpowiedz WYŁĄCZNIE poprawnym JSON, bez komentarzy: {"steps":[{"text":"...","date":"RRRR-MM-DD"}]}`;
+      const prompt = `${title ? `Zadanie: ${title}\n` : ''}Przedmiot: ${subject}
+Termin (deadline): ${deadline} ${WD[new Date(deadline + 'T12:00:00Z').getUTCDay()]}
+Opis od studentki:
+"""
+${desc}
+"""
+Dostępne dni (dziś = pierwszy):
+${cal.join('\n')}`;
+      const r = await env.AI.run(MODEL, { messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], max_tokens: 1500, temperature: 0.3 });
       const raw = typeof r.response === 'string' ? r.response : JSON.stringify(r.response);
       const m = raw.match(/\{[\s\S]*\}/);
       const steps = (JSON.parse(m[0]).steps || [])
