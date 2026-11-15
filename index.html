@@ -186,6 +186,8 @@ const eL=document.createElement('div'),eR=document.createElement('div');eL.class
 days.addEventListener('contextmenu',e=>{if(e.target.closest('.blk'))e.preventDefault()});
 days.addEventListener('touchstart',e=>{
   const b=e.target.closest('.blk');if(!b)return;const p=e.touches[0];
+  const tgt=e.target,mv=ev=>onMove(ev),en=()=>{tgt.removeEventListener('touchmove',mv);tgt.removeEventListener('touchend',en);tgt.removeEventListener('touchcancel',en);endDrag()};
+  tgt.addEventListener('touchmove',mv,{passive:false});tgt.addEventListener('touchend',en);tgt.addEventListener('touchcancel',en);
   pressT=setTimeout(()=>{
     const r=b.getBoundingClientRect(),g=b.cloneNode(true);g.classList.add('ghost');g.style.width=r.width+'px';document.body.append(g);
     drag={id:+b.dataset.t,k:+b.dataset.k,g,dx:p.clientX-r.left,dy:p.clientY-r.top,edgeT:null};
@@ -197,13 +199,13 @@ function move(x,y){
   drag.x=x;drag.y=y;drag.g.style.left=(x-drag.dx)+'px';drag.g.style.top=(y-drag.dy)+'px';
   over();const d=document.elementFromPoint(x,y)?.closest('.day');d&&d.classList.add('over');
   const side=x<40?-1:x>innerWidth-40?1:0;
-  if(side&&!drag.edgeT)drag.edgeT=setInterval(()=>{shiftWeek(side);move(drag.x,drag.y)},700);
+  if(side&&!drag.edgeT)drag.edgeT=setInterval(()=>{if(!drag)return;shiftWeek(side);move(drag.x,drag.y)},700);
   if(!side&&drag.edgeT){clearInterval(drag.edgeT);drag.edgeT=null}
 }
-document.addEventListener('touchmove',e=>{
+function onMove(e){
   if(!drag){clearTimeout(pressT);return}
   e.preventDefault();move(e.touches[0].clientX,e.touches[0].clientY);
-},{passive:false});
+}
 function endDrag(){
   clearTimeout(pressT);if(!drag)return;
   clearInterval(drag.edgeT);drag.g.remove();eL.style.display=eR.style.display='none';
@@ -211,7 +213,7 @@ function endDrag(){
   if(d){const t=S.tasks.find(t=>t.id===drag.id);t.steps[drag.k].date=d.dataset.d;save()}
   drag=null;dragged=true;setTimeout(()=>dragged=false,400);render();
 }
-document.addEventListener('touchend',endDrag);document.addEventListener('touchcancel',endDrag);
+
 function tab(x){cal.hidden=x!=='cal';list.hidden=x!=='list';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list')}
 fSub.addEventListener('change',()=>{if(S.colors[fSub.value]!=null){selCol=S.colors[fSub.value];render()}});
 
