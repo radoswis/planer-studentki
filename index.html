@@ -47,7 +47,8 @@ textarea{min-height:70px;resize:vertical}
 </section>
 <section id="list" hidden>
   <h1>Nowe zadanie</h1>
-  <label>Przedmiot</label><input id="fSub" placeholder="Psychologia poznawcza" list="subs"><datalist id="subs"></datalist>
+  <label>Nazwa zadania</label><input id="fTitle" placeholder="np. Przygotowanie na zjazd">
+  <label>Przedmiot</label><input id="fSub" placeholder="np. Psychologia poznawcza" list="subs"><datalist id="subs"></datalist>
   <label>Co dokładnie jest do zrobienia</label><textarea id="fDesc" placeholder="2 fragmenty książki, prezentacja, egzamin"></textarea>
   <label>Deadline</label><input id="fDl" type="date">
   <label>Kolor przedmiotu</label><div class="colors" id="fCol"></div>
@@ -114,7 +115,7 @@ function schedule(list,deadline,skipId){
 
 async function plan(t){
   if(AI_URL){try{
-    const r=await fetch(AI_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject:t.subject,desc:t.desc,deadline:t.deadline,today:today(),busy:loads(t.id)})});
+    const r=await fetch(AI_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.title,subject:t.subject,desc:t.desc,deadline:t.deadline,today:today(),busy:loads(t.id)})});
     const j=await r.json();
     if(Array.isArray(j.steps)&&j.steps.length)return j.steps.map(s=>({text:s.text,date:s.date,done:false}));
   }catch(e){}}
@@ -122,15 +123,15 @@ async function plan(t){
 }
 
 async function addTask(){
-  const sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
-  if(!sub||!desc||!dl)return alertMsg('Uzupełnij przedmiot, opis i deadline.');
+  const title=fTitle.value.trim(),sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
+  if(!sub||!desc||!dl)return alertMsg('Uzupełnij przynajmniej przedmiot, opis i deadline.');
   if(dl<=today())return alertMsg('Deadline musi być w przyszłości.');
   S.colors[sub]=S.colors[sub]??selCol;
-  const t={id:Date.now(),subject:sub,desc,deadline:dl};
+  const t={id:Date.now(),title:title||sub,subject:sub,desc,deadline:dl};
   const b=document.querySelector('#list .btn');b.textContent='Planuję z AI…';b.disabled=true;
   t.steps=await plan(t);
   b.textContent='+ Dodaj i rozplanuj';b.disabled=false;
-  S.tasks.push(t);save();fDesc.value='';render();tab('cal');
+  S.tasks.push(t);save();fTitle.value='';fDesc.value='';render();tab('cal');
 }
 function alertMsg(m){let e=document.getElementById('err');if(!e){e=document.createElement('div');e.id='err';e.style.cssText='color:#a32d2d;font-size:13px;margin-top:8px';document.querySelector('#list .btn').after(e)}e.textContent=m;setTimeout(()=>e.textContent='',3000)}
 
@@ -158,12 +159,19 @@ function render(){
     let c='';
     S.tasks.forEach(t=>{
       t.steps.forEach((s,k)=>{if(s.date===d){const[bg,fg]=col(t.subject);c+=`<div class="blk${s.done?' done':''}" style="background:${bg};color:${fg}" onclick="toggle(${t.id},${k})">${s.done?'✓ ':''}${s.text} <small>· ${t.subject}</small></div>`}});
-      if(t.deadline===d)c+=`<div class="dead">⚑ Deadline: ${t.subject}</div>`;
+      if(t.deadline===d){
+        const label = t.title && t.title !== t.subject ? `${t.title} (${t.subject})` : t.subject;
+        c+=`<div class="dead">⚑ Deadline: ${label}</div>`;
+      }
     });
     h+=`<div class="day${d===t0?' today':''}"><div class="dl">${DAYS[dt.getDay()]}<br>${dt.getDate()}</div><div style="flex:1">${c||'<div class="empty">wolne</div>'}</div></div>`;
   }
   days.innerHTML=h;
-  tasks.innerHTML=S.tasks.length?S.tasks.slice().sort((a,b)=>a.deadline<b.deadline?-1:1).map(t=>{const[bg,fg]=col(t.subject),d=t.steps.filter(s=>s.done).length;return`<div class="card" style="background:${bg};color:${fg}"><div><b>${t.subject}</b><br><small>${t.desc}</small><br><small>${d}/${t.steps.length} kroków · do ${t.deadline.slice(8)}.${t.deadline.slice(5,7)}</small></div><button class="x" style="color:${fg}" onclick="del(${t.id})">✕</button></div>`}).join(''):'<div class="empty">Dodaj pierwsze zadanie powyżej.</div>';
+  tasks.innerHTML=S.tasks.length?S.tasks.slice().sort((a,b)=>a.deadline<b.deadline?-1:1).map(t=>{
+    const[bg,fg]=col(t.subject),d=t.steps.filter(s=>s.done).length;
+    const header=t.title&&t.title!==t.subject?`<b>${t.title}</b> <small>· ${t.subject}</small>`:`<b>${t.subject}</b>`;
+    return`<div class="card" style="background:${bg};color:${fg}"><div>${header}<br><small>${t.desc}</small><br><small>${d}/${t.steps.length} kroków · do ${t.deadline.slice(8)}.${t.deadline.slice(5,7)}</small></div><button class="x" style="color:${fg}" onclick="del(${t.id})">✕</button></div>`
+  }).join(''):'<div class="empty">Dodaj pierwsze zadanie powyżej.</div>';
   subs.innerHTML=Object.keys(S.colors).map(s=>`<option value="${s}">`).join('');
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
 }
@@ -174,8 +182,8 @@ fSub.addEventListener('change',()=>{if(S.colors[fSub.value]!=null){selCol=S.colo
 function demo(){
   S={tasks:[],colors:{'Psychologia poznawcza':0,'Psychometria':1}};
   let sat=addD(monday(0),5);if(sat<=today())sat=addD(sat,7);
-  [['Psychologia poznawcza','2 fragmenty książki, prezentacja'],['Psychometria','egzamin z teorii']].forEach(([s,d],i)=>{
-    const t={id:i+1,subject:s,desc:d,deadline:sat};t.steps=schedule(steps(d),sat,t.id);S.tasks.push(t)});
+  [['Przygotowanie na zjazd','Psychologia poznawcza','2 fragmenty książki, prezentacja'],['Egzamin teoretyczny','Psychometria','egzamin z teorii']].forEach(([name,s,d],i)=>{
+    const t={id:i+1,title:name,subject:s,desc:d,deadline:sat};t.steps=schedule(steps(d),sat,t.id);S.tasks.push(t)});
   return S;
 }
 S=load();

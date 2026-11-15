@@ -5,11 +5,12 @@ export default {
     const url = new URL(req.url);
     if (url.pathname !== '/api/plan' || req.method !== 'POST') return env.ASSETS.fetch(req);
     try {
-      const { subject, desc, deadline, today, busy = {} } = await req.json();
+      const { title, subject, desc, deadline, today, busy = {} } = await req.json();
       if (!subject || !desc || !/^\d{4}-\d{2}-\d{2}$/.test(deadline || '')) return json({ error: 'bad input' }, 400);
       const last = addD(deadline, -1);
+      const taskLine = title ? `Zadanie: ${title}\n` : '';
       const prompt = `Jesteś planerem nauki dla studentki psychologii (wzrokowiec).
-Przedmiot: ${subject}
+${taskLine}Przedmiot: ${subject}
 Do zrobienia: ${desc}
 Dziś: ${today}. Deadline (zjazd): ${deadline}. Kroki planuj od ${today} do ${last} włącznie.
 Dni już zajęte (data: liczba kroków): ${JSON.stringify(busy)} – unikaj ich przeciążania.
