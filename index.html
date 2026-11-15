@@ -28,6 +28,10 @@ textarea{min-height:70px;resize:vertical}
 .day.today .dl{font-weight:700;color:#2c2c2a}
 .dl{width:46px;font-size:13px;color:#888;line-height:1.3;flex-shrink:0}
 .blk{border-radius:8px;padding:8px 10px;font-size:14px;margin-bottom:5px;cursor:pointer}
+.blk{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.ghost{position:fixed;z-index:20;pointer-events:none;opacity:.9;box-shadow:0 6px 18px rgba(0,0,0,.35);transform:scale(1.04)}
+.day.over{background:rgba(127,127,127,.15);border-radius:8px}
+.edge{position:fixed;top:0;bottom:0;width:28px;z-index:19;background:rgba(127,127,127,.25);display:none}
 .blk.done{opacity:.45;text-decoration:line-through}
 .dead{font-size:13px;color:#993556;padding:4px 0}
 .nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
@@ -145,7 +149,7 @@ async function replanAll(){
   }
   save();render();
 }
-function toggle(id,i){const t=S.tasks.find(t=>t.id===id);t.steps[i].done=!t.steps[i].done;save();render()}
+function toggle(id,i){if(dragged)return;const t=S.tasks.find(t=>t.id===id);t.steps[i].done=!t.steps[i].done;save();render()}
 function del(id){if(!confirm('Usunąć zadanie?'))return;S.tasks=S.tasks.filter(t=>t.id!==id);save();render()}
 const col=s=>COLORS[S.colors[s]??0];
 
@@ -158,13 +162,13 @@ function render(){
     const d=addD(m,i),dt=new Date(d+'T12:00');
     let c='';
     S.tasks.forEach(t=>{
-      t.steps.forEach((s,k)=>{if(s.date===d){const[bg,fg]=col(t.subject);c+=`<div class="blk${s.done?' done':''}" style="background:${bg};color:${fg}" onclick="toggle(${t.id},${k})">${s.done?'✓ ':''}${s.text} <small>· ${t.subject}</small></div>`}});
+      t.steps.forEach((s,k)=>{if(s.date===d){const[bg,fg]=col(t.subject);c+=`<div class="blk${s.done?' done':''}" style="background:${bg};color:${fg}" data-t="${t.id}" data-k="${k}" onclick="toggle(${t.id},${k})">${s.done?'✓ ':''}${s.text} <small>· ${t.subject}</small></div>`}});
       if(t.deadline===d){
         const label = t.title && t.title !== t.subject ? `${t.title} (${t.subject})` : t.subject;
         c+=`<div class="dead">⚑ Deadline: ${label}</div>`;
       }
     });
-    h+=`<div class="day${d===t0?' today':''}"><div class="dl">${DAYS[dt.getDay()]}<br>${dt.getDate()}</div><div style="flex:1">${c||'<div class="empty">wolne</div>'}</div></div>`;
+    h+=`<div class="day${d===t0?' today':''}" data-d="${d}"><div class="dl">${DAYS[dt.getDay()]}<br>${dt.getDate()}</div><div style="flex:1">${c||'<div class="empty">wolne</div>'}</div></div>`;
   }
   days.innerHTML=h;
   tasks.innerHTML=S.tasks.length?S.tasks.slice().sort((a,b)=>a.deadline<b.deadline?-1:1).map(t=>{
@@ -176,6 +180,38 @@ function render(){
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
 }
 function shiftWeek(n){week+=n;render()}
+// przeciąganie kroków: przytrzymaj ~0,3 s, przesuń na inny dzień; przy krawędzi ekranu zmienia tydzień
+let drag=null,dragged=false,pressT=null;
+const eL=document.createElement('div'),eR=document.createElement('div');eL.className=eR.className='edge';eL.style.left=0;eR.style.right=0;document.body.append(eL,eR);
+days.addEventListener('contextmenu',e=>{if(e.target.closest('.blk'))e.preventDefault()});
+days.addEventListener('touchstart',e=>{
+  const b=e.target.closest('.blk');if(!b)return;const p=e.touches[0];
+  pressT=setTimeout(()=>{
+    const r=b.getBoundingClientRect(),g=b.cloneNode(true);g.classList.add('ghost');g.style.width=r.width+'px';document.body.append(g);
+    drag={id:+b.dataset.t,k:+b.dataset.k,g,dx:p.clientX-r.left,dy:p.clientY-r.top,edgeT:null};
+    eL.style.display=eR.style.display='block';navigator.vibrate&&navigator.vibrate(30);move(p.clientX,p.clientY);
+  },300);
+},{passive:true});
+function over(){const o=days.querySelector('.over');o&&o.classList.remove('over')}
+function move(x,y){
+  drag.x=x;drag.y=y;drag.g.style.left=(x-drag.dx)+'px';drag.g.style.top=(y-drag.dy)+'px';
+  over();const d=document.elementFromPoint(x,y)?.closest('.day');d&&d.classList.add('over');
+  const side=x<40?-1:x>innerWidth-40?1:0;
+  if(side&&!drag.edgeT)drag.edgeT=setInterval(()=>{shiftWeek(side);move(drag.x,drag.y)},700);
+  if(!side&&drag.edgeT){clearInterval(drag.edgeT);drag.edgeT=null}
+}
+document.addEventListener('touchmove',e=>{
+  if(!drag){clearTimeout(pressT);return}
+  e.preventDefault();move(e.touches[0].clientX,e.touches[0].clientY);
+},{passive:false});
+function endDrag(){
+  clearTimeout(pressT);if(!drag)return;
+  clearInterval(drag.edgeT);drag.g.remove();eL.style.display=eR.style.display='none';
+  const d=document.elementFromPoint(drag.x,drag.y)?.closest('.day');over();
+  if(d){const t=S.tasks.find(t=>t.id===drag.id);t.steps[drag.k].date=d.dataset.d;save()}
+  drag=null;dragged=true;setTimeout(()=>dragged=false,400);render();
+}
+document.addEventListener('touchend',endDrag);document.addEventListener('touchcancel',endDrag);
 function tab(x){cal.hidden=x!=='cal';list.hidden=x!=='list';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list')}
 fSub.addEventListener('change',()=>{if(S.colors[fSub.value]!=null){selCol=S.colors[fSub.value];render()}});
 
