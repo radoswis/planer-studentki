@@ -59,7 +59,7 @@ textarea{min-height:70px;resize:vertical}
 <nav class="tabs"><button id="tCal" class="on" onclick="tab('cal')">📅 Kalendarz</button><button id="tList" onclick="tab('list')">📝 Lista zadań</button></nav>
 <script>
 // Adres Workera z AI (opcjonalnie). Pusty = lokalny algorytm.
-const AI_URL = '';
+const AI_URL = '/api/plan';
 const COLORS=[['#d9ede3','#0f5a44'],['#dce9f7','#0c447c'],['#f6dde6','#72243e'],['#f8e8cc','#633806'],['#e6e3f8','#3c3489'],['#f3e0d8','#712b13']];
 const DAYS=['Nd','Pon','Wt','Śr','Czw','Pt','Sob'];
 let S, week=0, selCol=0;
@@ -127,7 +127,9 @@ async function addTask(){
   if(dl<=today())return alertMsg('Deadline musi być w przyszłości.');
   S.colors[sub]=S.colors[sub]??selCol;
   const t={id:Date.now(),subject:sub,desc,deadline:dl};
+  const b=document.querySelector('#list .btn');b.textContent='Planuję z AI…';b.disabled=true;
   t.steps=await plan(t);
+  b.textContent='+ Dodaj i rozplanuj';b.disabled=false;
   S.tasks.push(t);save();fDesc.value='';render();tab('cal');
 }
 function alertMsg(m){let e=document.getElementById('err');if(!e){e=document.createElement('div');e.id='err';e.style.cssText='color:#a32d2d;font-size:13px;margin-top:8px';document.querySelector('#list .btn').after(e)}e.textContent=m;setTimeout(()=>e.textContent='',3000)}

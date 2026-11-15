@@ -1,5 +1,7 @@
 {
   "name": "planer-studentki",
+  "main": "worker.js",
   "compatibility_date": "2026-11-01",
-  "assets": { "directory": "." }
+  "assets": { "directory": ".", "binding": "ASSETS" },
+  "ai": { "binding": "AI" }
 }
