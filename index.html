@@ -30,6 +30,10 @@ textarea{min-height:70px;resize:vertical}
 .blk{border-radius:8px;padding:8px 10px;font-size:14px;margin-bottom:5px;cursor:pointer}
 .blk{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .ghost{position:fixed;z-index:20;pointer-events:none;opacity:.9;box-shadow:0 6px 18px rgba(0,0,0,.35);transform:scale(1.04)}
+#days{touch-action:pan-y}
+@keyframes inL{from{transform:translateX(60%);opacity:0}to{transform:none;opacity:1}}
+@keyframes inR{from{transform:translateX(-60%);opacity:0}to{transform:none;opacity:1}}
+.inL{animation:inL .25s ease-out}.inR{animation:inR .25s ease-out}
 .day.over{background:rgba(127,127,127,.15);border-radius:8px}
 .edge{position:fixed;top:0;bottom:0;width:28px;z-index:19;background:rgba(127,127,127,.25);display:none}
 .blk.done{opacity:.45;text-decoration:line-through}
@@ -179,7 +183,19 @@ function render(){
   subs.innerHTML=Object.keys(S.colors).map(s=>`<option value="${s}">`).join('');
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
 }
-function shiftWeek(n){week+=n;render()}
+function shiftWeek(n){week+=n;render();days.style.transform='';days.classList.remove('inL','inR');void days.offsetWidth;days.classList.add(n>0?'inL':'inR')}
+// gest przesunięcia tygodnia
+let sw=null;
+days.addEventListener('touchstart',e=>{const p=e.touches[0];sw={x:p.clientX,y:p.clientY,h:null}},{passive:true});
+days.addEventListener('touchmove',e=>{
+  if(!sw||drag)return;const p=e.touches[0],dx=p.clientX-sw.x,dy=p.clientY-sw.y;
+  if(sw.h===null&&Math.abs(dx)+Math.abs(dy)>10)sw.h=Math.abs(dx)>Math.abs(dy);
+  if(sw.h){sw.dx=dx;days.style.transform=`translateX(${dx*.4}px)`;days.style.opacity=1-Math.min(Math.abs(dx)/600,.4)}
+},{passive:true});
+document.addEventListener('touchend',()=>{
+  if(!sw)return;const dx=sw.dx||0,h=sw.h;sw=null;days.style.opacity='';
+  if(h&&!dragged&&Math.abs(dx)>60)shiftWeek(dx<0?1:-1);else{days.style.transition='transform .2s';days.style.transform='';setTimeout(()=>days.style.transition='',200)}
+});
 // przeciąganie kroków: przytrzymaj ~0,3 s, przesuń na inny dzień; przy krawędzi ekranu zmienia tydzień
 let drag=null,dragged=false,pressT=null;
 const eL=document.createElement('div'),eR=document.createElement('div');eL.className=eR.className='edge';eL.style.left=0;eR.style.right=0;document.body.append(eL,eR);
