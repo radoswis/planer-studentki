@@ -50,6 +50,7 @@ textarea{min-height:70px;resize:vertical}
 .combo{position:relative}.combo input{padding-right:42px}.cbtn{position:absolute;right:4px;top:4px;bottom:4px;width:36px;border:0;background:none;font-size:16px;color:#777}
 .dd{position:absolute;left:0;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid #ddd9cf;border-radius:10px;max-height:240px;overflow-y:auto;z-index:10;box-shadow:0 6px 18px rgba(0,0,0,.12)}
 .dd div{padding:11px 12px;display:flex;align-items:center;gap:10px;border-top:1px solid #f0ede5}.dd div:first-child{border-top:0}.dd i{width:14px;height:14px;border-radius:50%;flex-shrink:0}
+.subj{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #e4e1d8}.subj i{width:26px;height:26px;border-radius:50%;cursor:pointer;flex-shrink:0}.subj span{flex:1}
 .hint{font-size:12px;color:#999;margin-top:8px}
 </style>
 </head>
@@ -74,6 +75,11 @@ textarea{min-height:70px;resize:vertical}
   <button class="btn2" id="fCancel" style="width:100%;margin-top:8px" hidden onclick="cancelEdit()">Anuluj edycję</button>
   <h1 style="margin-top:22px">Zadania</h1>
   <div id="tasks"></div>
+  <h1 style="margin-top:22px">Moje przedmioty</h1>
+  <div id="subjList"></div>
+  <div style="display:flex;gap:8px;margin-top:8px"><input id="nSub" placeholder="Nowy przedmiot"><button class="btn2" onclick="addSubj()">+ Dodaj</button></div>
+  <div class="hint">Stuknij kółko, aby zmienić kolor przedmiotu.</div>
+  
 </section>
 </main>
 <nav class="tabs"><button id="tCal" class="on" onclick="tab('cal')">📅 Kalendarz</button><button id="tList" onclick="tab('list')">📝 Lista zadań</button></nav>
@@ -84,7 +90,7 @@ const COLORS=[['#d9ede3','#0f5a44'],['#dce9f7','#0c447c'],['#f6dde6','#72243e'],
 const DAYS=['Nd','Pon','Wt','Śr','Czw','Pt','Sob'];
 let S, week=0, selCol=0;
 
-function load(){try{const d=JSON.parse(localStorage.getItem('planer'));if(d)return d}catch(e){}return demo()}
+function load(){try{const d=JSON.parse(localStorage.getItem('planer'));if(d)return d}catch(e){}return{tasks:[],colors:{}}}
 function save(){try{localStorage.setItem('planer',JSON.stringify(S))}catch(e){}}
 const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10);
 const addD=(s,n)=>{const d=new Date(s+'T12:00');d.setDate(d.getDate()+n);return iso(d)};
@@ -211,6 +217,7 @@ function render(){
     h+=`<div class="day${d===t0?' today':''}" data-d="${d}"><div class="dl">${DAYS[dt.getDay()]}<br>${dt.getDate()}</div><div style="flex:1">${c||'<div class="empty">wolne</div>'}</div></div>`;
   }
   days.innerHTML=h;
+  renderSubj();
   tasks.innerHTML=S.tasks.length?S.tasks.slice().sort((a,b)=>a.deadline<b.deadline?-1:1).map(t=>{
     const[bg,fg]=col(t.subject),d=t.steps.filter(s=>s.done).length;
     const header=t.title&&t.title!==t.subject?`<b>${t.title}</b> <small>· ${t.subject}</small>`:`<b>${t.subject}</b>`;
@@ -266,6 +273,18 @@ function endDrag(){
 }
 
 function tab(x){cal.hidden=x!=='cal';list.hidden=x!=='list';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list')}
+function addSubj(){const n=nSub.value.trim();if(!n)return;if(S.colors[n]==null){const used=Object.values(S.colors);let c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[n]=c<0?0:c;save()}nSub.value='';render()}
+function delSubj(n){
+  const k=S.tasks.filter(t=>t.subject===n).length;
+  if(!confirm(k?`Przedmiot „${n}” ma ${k} zadań. Usunąć przedmiot razem z zadaniami?`:`Usunąć przedmiot „${n}”?`))return;
+  S.tasks=S.tasks.filter(t=>t.subject!==n);delete S.colors[n];save();render();
+}
+function cycleCol(n){S.colors[n]=(S.colors[n]+1)%COLORS.length;save();render()}
+function renderSubj(){
+  const L=Object.keys(S.colors).sort((a,b)=>a.localeCompare(b,'pl'));
+  subjList.innerHTML=L.length?L.map((n,i)=>{const[bg,fg]=COLORS[S.colors[n]];return`<div class="subj"><i style="background:${bg};border:2px solid ${fg}" onclick="cycleCol(SL[${i}])"></i><span>${n}</span><button class="x" onclick="delSubj(SL[${i}])">✕</button></div>`}).join(''):'<div class="empty">Brak przedmiotów – dodaj pierwszy.</div>';
+  window.SL=L;
+}
 function showSubs(all){
   const q=all?'':fSub.value.trim().toLowerCase(),L=Object.keys(S.colors).filter(s=>s.toLowerCase().includes(q)).sort((a,b)=>a.localeCompare(b,'pl'));
   subs.innerHTML=L.map(s=>`<div data-s="${s.replace(/"/g,'&quot;')}"><i style="background:${COLORS[S.colors[s]][0]};border:2px solid ${COLORS[S.colors[s]][1]}"></i>${s}</div>`).join('');
