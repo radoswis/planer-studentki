@@ -41,6 +41,7 @@ textarea{min-height:70px;resize:vertical}
 .nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin-bottom:6px}
 .empty{color:#999;font-size:14px;padding:6px 0}
+.srow{display:flex;gap:6px;margin:5px 0}.srow input[type=text]{flex:1}.srow input[type=date]{width:130px}
 .hint{font-size:12px;color:#999;margin-top:8px}
 </style>
 </head>
@@ -54,13 +55,15 @@ textarea{min-height:70px;resize:vertical}
   <div class="hint">Stuknij krok, aby oznaczyć jako zrobiony.</div>
 </section>
 <section id="list" hidden>
-  <h1>Nowe zadanie</h1>
+  <h1 id="fHead">Nowe zadanie</h1>
   <label>Nazwa zadania</label><input id="fTitle" placeholder="np. Przygotowanie na zjazd">
   <label>Przedmiot</label><input id="fSub" placeholder="np. Psychologia poznawcza" list="subs"><datalist id="subs"></datalist>
   <label>Co dokładnie jest do zrobienia</label><textarea id="fDesc" placeholder="2 fragmenty książki, prezentacja, egzamin"></textarea>
   <label>Deadline</label><input id="fDl" type="date">
   <label>Kolor przedmiotu</label><div class="colors" id="fCol"></div>
-  <button class="btn" onclick="addTask()">+ Dodaj i rozplanuj</button>
+  <div id="fSteps" hidden><label>Kroki (tekst i dzień)</label><div id="stepList"></div><button class="btn2" onclick="addStepRow()">+ krok</button></div>
+  <button class="btn" id="fBtn" onclick="addTask()">+ Dodaj i rozplanuj</button>
+  <button class="btn2" id="fCancel" style="width:100%;margin-top:8px" hidden onclick="cancelEdit()">Anuluj edycję</button>
   <h1 style="margin-top:22px">Zadania</h1>
   <div id="tasks"></div>
 </section>
@@ -131,6 +134,7 @@ async function plan(t){
 }
 
 async function addTask(){
+  if(editId)return saveEdit();
   const title=fTitle.value.trim(),sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
   if(!sub||!desc||!dl)return alertMsg('Uzupełnij przynajmniej przedmiot, opis i deadline.');
   if(dl<=today())return alertMsg('Deadline musi być w przyszłości.');
@@ -140,6 +144,30 @@ async function addTask(){
   t.steps=await plan(t);
   b.textContent='+ Dodaj i rozplanuj';b.disabled=false;
   S.tasks.push(t);save();fTitle.value='';fDesc.value='';render();tab('cal');
+}
+let editId=null;
+function stepRow(s={text:'',date:today()}){return`<div class="srow"><input type="text" value="${(s.text||'').replace(/"/g,'&quot;')}"><input type="date" value="${s.date}"><button class="x" onclick="this.parentNode.remove()">✕</button></div>`}
+function addStepRow(){stepList.insertAdjacentHTML('beforeend',stepRow())}
+function edit(id){
+  const t=S.tasks.find(t=>t.id===id);editId=id;
+  fTitle.value=t.title;fSub.value=t.subject;fDesc.value=t.desc;fDl.value=t.deadline;fDl.min='';selCol=S.colors[t.subject]??0;
+  stepList.innerHTML=t.steps.map(stepRow).join('');stepList._done=t.steps.map(s=>s.done);
+  fHead.textContent='Edytuj zadanie';fBtn.textContent='💾 Zapisz zmiany';fSteps.hidden=fCancel.hidden=false;
+  render();tab('list');scrollTo(0,0);
+}
+function cancelEdit(){editId=null;fTitle.value='';fDesc.value='';fDl.min=addD(today(),1);fHead.textContent='Nowe zadanie';fBtn.textContent='+ Dodaj i rozplanuj';fSteps.hidden=fCancel.hidden=true;stepList.innerHTML=''}
+async function saveEdit(){
+  const t=S.tasks.find(t=>t.id===editId),sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
+  if(!sub||!desc||!dl)return alertMsg('Uzupełnij przynajmniej przedmiot, opis i deadline.');
+  const rows=[...stepList.children].map((r,i)=>{const[a,b]=r.querySelectorAll('input');return{text:a.value.trim(),date:b.value||today(),done:false,_i:i}}).filter(s=>s.text);
+  // zachowaj status "zrobione" dla kroków o niezmienionym tekście
+  rows.forEach(s=>{const o=t.steps.find(o=>o.text===s.text);if(o)s.done=o.done;delete s._i});
+  const descChanged=desc!==t.desc;
+  Object.assign(t,{title:fTitle.value.trim()||sub,subject:sub,desc,deadline:dl});
+  S.colors[sub]=selCol;
+  if(descChanged&&confirm('Opis się zmienił. Rozplanować kroki od nowa?')){fBtn.textContent='Planuję z AI…';fBtn.disabled=true;t.steps=await plan(t);fBtn.disabled=false}
+  else t.steps=rows;
+  save();cancelEdit();render();tab('cal');
 }
 function alertMsg(m){let e=document.getElementById('err');if(!e){e=document.createElement('div');e.id='err';e.style.cssText='color:#a32d2d;font-size:13px;margin-top:8px';document.querySelector('#list .btn').after(e)}e.textContent=m;setTimeout(()=>e.textContent='',3000)}
 
@@ -178,7 +206,7 @@ function render(){
   tasks.innerHTML=S.tasks.length?S.tasks.slice().sort((a,b)=>a.deadline<b.deadline?-1:1).map(t=>{
     const[bg,fg]=col(t.subject),d=t.steps.filter(s=>s.done).length;
     const header=t.title&&t.title!==t.subject?`<b>${t.title}</b> <small>· ${t.subject}</small>`:`<b>${t.subject}</b>`;
-    return`<div class="card" style="background:${bg};color:${fg}"><div>${header}<br><small>${t.desc}</small><br><small>${d}/${t.steps.length} kroków · do ${t.deadline.slice(8)}.${t.deadline.slice(5,7)}</small></div><button class="x" style="color:${fg}" onclick="del(${t.id})">✕</button></div>`
+    return`<div class="card" style="background:${bg};color:${fg}"><div>${header}<br><small>${t.desc}</small><br><small>${d}/${t.steps.length} kroków · do ${t.deadline.slice(8)}.${t.deadline.slice(5,7)}</small></div><span style="white-space:nowrap"><button class="x" style="color:${fg}" onclick="edit(${t.id})">✎</button><button class="x" style="color:${fg}" onclick="del(${t.id})">✕</button></span></div>`
   }).join(''):'<div class="empty">Dodaj pierwsze zadanie powyżej.</div>';
   subs.innerHTML=Object.keys(S.colors).map(s=>`<option value="${s}">`).join('');
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
