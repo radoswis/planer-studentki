@@ -24,7 +24,6 @@ textarea{min-height:70px;resize:vertical}
 .card{border-radius:10px;padding:10px 12px;margin:6px 0;display:flex;justify-content:space-between;gap:8px;align-items:center}
 .card small{opacity:.8}
 .x{border:0;background:none;font-size:18px;opacity:.6}
-#days{max-height:calc(100dvh - 240px);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;border-bottom:1px solid #e4e1d8}
 .day{display:flex;gap:10px;padding:10px 0;border-top:1px solid #e4e1d8}
 .day.today .dl{font-weight:700;color:#2c2c2a}
 .dl{width:46px;font-size:13px;color:#888;line-height:1.3;flex-shrink:0}
@@ -40,7 +39,7 @@ textarea{min-height:70px;resize:vertical}
 <body>
 <main>
 <section id="cal">
-  <div class="nav"><h1 id="wk" style="margin:0"></h1><button class="btn2" onclick="goToday()">Dziś</button></div>
+  <div class="nav"><button class="btn2" onclick="shiftWeek(-1)">‹</button><h1 id="wk" style="margin:0"></h1><button class="btn2" onclick="shiftWeek(1)">›</button></div>
   <div class="legend" id="legend"></div>
   <div id="days"></div>
   <button class="btn" onclick="replanAll()">↻ Przeplanuj wszystko</button>
@@ -151,12 +150,11 @@ function del(id){if(!confirm('Usunąć zadanie?'))return;S.tasks=S.tasks.filter(
 const col=s=>COLORS[S.colors[s]??0];
 
 function render(){
-  const m=monday(-2),t0=today();
-  let end=addD(monday(8),6);S.tasks.forEach(t=>{if(t.deadline>end)end=t.deadline});
-  const n=Math.round((new Date(end+'T12:00')-new Date(m+'T12:00'))/864e5)+1;
+  const m=monday(week),t0=today();
+  wk.textContent=`${+m.slice(8)}.${m.slice(5,7)} – ${+addD(m,6).slice(8)}.${addD(m,6).slice(5,7)}`;
   legend.innerHTML=[...new Set(S.tasks.map(t=>t.subject))].map(s=>`<span style="color:${col(s)[1]}">● ${s}</span>`).join('');
   let h='';
-  for(let i=0;i<n;i++){
+  for(let i=0;i<7;i++){
     const d=addD(m,i),dt=new Date(d+'T12:00');
     let c='';
     S.tasks.forEach(t=>{
@@ -166,11 +164,9 @@ function render(){
         c+=`<div class="dead">⚑ Deadline: ${label}</div>`;
       }
     });
-    h+=`<div class="day${d===t0?' today':''}" data-d="${d}"><div class="dl">${DAYS[dt.getDay()]}<br>${dt.getDate()}</div><div style="flex:1">${c||'<div class="empty">wolne</div>'}</div></div>`;
+    h+=`<div class="day${d===t0?' today':''}"><div class="dl">${DAYS[dt.getDay()]}<br>${dt.getDate()}</div><div style="flex:1">${c||'<div class="empty">wolne</div>'}</div></div>`;
   }
-  const st=days.scrollTop;days.innerHTML=h;
-  if(!rendered){rendered=1;goToday()}else days.scrollTop=st;
-  setMonth();
+  days.innerHTML=h;
   tasks.innerHTML=S.tasks.length?S.tasks.slice().sort((a,b)=>a.deadline<b.deadline?-1:1).map(t=>{
     const[bg,fg]=col(t.subject),d=t.steps.filter(s=>s.done).length;
     const header=t.title&&t.title!==t.subject?`<b>${t.title}</b> <small>· ${t.subject}</small>`:`<b>${t.subject}</b>`;
@@ -179,11 +175,7 @@ function render(){
   subs.innerHTML=Object.keys(S.colors).map(s=>`<option value="${s}">`).join('');
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
 }
-let rendered=0;
-const MON=['styczeń','luty','marzec','kwiecień','maj','czerwiec','lipiec','sierpień','wrzesień','październik','listopad','grudzień'];
-function goToday(){const td=days.querySelector('.today');if(td)days.scrollTop=td.offsetTop-days.offsetTop}
-function setMonth(){const top=days.scrollTop+days.offsetTop;const el=[...days.children].find(e=>e.offsetTop+e.offsetHeight>top);if(el){const d=el.dataset.d;wk.textContent=MON[+d.slice(5,7)-1]+' '+d.slice(0,4)}}
-days.addEventListener('scroll',setMonth);
+function shiftWeek(n){week+=n;render()}
 function tab(x){cal.hidden=x!=='cal';list.hidden=x!=='list';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list')}
 fSub.addEventListener('change',()=>{if(S.colors[fSub.value]!=null){selCol=S.colors[fSub.value];render()}});
 
