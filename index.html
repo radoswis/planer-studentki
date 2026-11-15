@@ -40,7 +40,7 @@ textarea{min-height:70px;resize:vertical}
 <body>
 <main>
 <section id="cal">
-  <div class="nav"><button class="btn2" onclick="shiftWeek(-1)">‹</button><h1 id="wk" style="margin:0"></h1><button class="btn2" onclick="shiftWeek(1)">›</button></div>
+  <div class="nav"><h1 id="wk" style="margin:0"></h1><button class="btn2" onclick="goToday()">Dziś</button></div>
   <div class="legend" id="legend"></div>
   <div id="days"></div>
   <button class="btn" onclick="replanAll()">↻ Przeplanuj wszystko</button>
@@ -151,11 +151,12 @@ function del(id){if(!confirm('Usunąć zadanie?'))return;S.tasks=S.tasks.filter(
 const col=s=>COLORS[S.colors[s]??0];
 
 function render(){
-  const m=monday(week),t0=today();
-  wk.textContent=`${+m.slice(8)}.${m.slice(5,7)} – ${+addD(m,6).slice(8)}.${addD(m,6).slice(5,7)}`;
+  const m=monday(-2),t0=today();
+  let end=addD(monday(8),6);S.tasks.forEach(t=>{if(t.deadline>end)end=t.deadline});
+  const n=Math.round((new Date(end+'T12:00')-new Date(m+'T12:00'))/864e5)+1;
   legend.innerHTML=[...new Set(S.tasks.map(t=>t.subject))].map(s=>`<span style="color:${col(s)[1]}">● ${s}</span>`).join('');
   let h='';
-  for(let i=0;i<7;i++){
+  for(let i=0;i<n;i++){
     const d=addD(m,i),dt=new Date(d+'T12:00');
     let c='';
     S.tasks.forEach(t=>{
@@ -165,10 +166,11 @@ function render(){
         c+=`<div class="dead">⚑ Deadline: ${label}</div>`;
       }
     });
-    h+=`<div class="day${d===t0?' today':''}"><div class="dl">${DAYS[dt.getDay()]}<br>${dt.getDate()}</div><div style="flex:1">${c||'<div class="empty">wolne</div>'}</div></div>`;
+    h+=`<div class="day${d===t0?' today':''}" data-d="${d}"><div class="dl">${DAYS[dt.getDay()]}<br>${dt.getDate()}</div><div style="flex:1">${c||'<div class="empty">wolne</div>'}</div></div>`;
   }
-  days.innerHTML=h;
-  const td=days.querySelector('.today');days.scrollTop=td?td.offsetTop-days.offsetTop:0;
+  const st=days.scrollTop;days.innerHTML=h;
+  if(!rendered){rendered=1;goToday()}else days.scrollTop=st;
+  setMonth();
   tasks.innerHTML=S.tasks.length?S.tasks.slice().sort((a,b)=>a.deadline<b.deadline?-1:1).map(t=>{
     const[bg,fg]=col(t.subject),d=t.steps.filter(s=>s.done).length;
     const header=t.title&&t.title!==t.subject?`<b>${t.title}</b> <small>· ${t.subject}</small>`:`<b>${t.subject}</b>`;
@@ -177,7 +179,11 @@ function render(){
   subs.innerHTML=Object.keys(S.colors).map(s=>`<option value="${s}">`).join('');
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
 }
-function shiftWeek(n){week+=n;render()}
+let rendered=0;
+const MON=['styczeń','luty','marzec','kwiecień','maj','czerwiec','lipiec','sierpień','wrzesień','październik','listopad','grudzień'];
+function goToday(){const td=days.querySelector('.today');if(td)days.scrollTop=td.offsetTop-days.offsetTop}
+function setMonth(){const top=days.scrollTop+days.offsetTop;const el=[...days.children].find(e=>e.offsetTop+e.offsetHeight>top);if(el){const d=el.dataset.d;wk.textContent=MON[+d.slice(5,7)-1]+' '+d.slice(0,4)}}
+days.addEventListener('scroll',setMonth);
 function tab(x){cal.hidden=x!=='cal';list.hidden=x!=='list';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list')}
 fSub.addEventListener('change',()=>{if(S.colors[fSub.value]!=null){selCol=S.colors[fSub.value];render()}});
 
