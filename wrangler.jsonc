@@ -2,6 +2,7 @@
   "name": "planer-studentki",
   "main": "worker.js",
   "compatibility_date": "2026-11-01",
-  "assets": { "directory": ".", "binding": "ASSETS" },
-  "ai": { "binding": "AI" }
+  "assets": { "directory": ".", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+  "ai": { "binding": "AI" },
+  "kv_namespaces": [{ "binding": "DATA", "id": "fb3c488599934831bf73784e2b57c286" }]
 }

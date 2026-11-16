@@ -28,7 +28,7 @@ textarea{min-height:70px;resize:vertical}
 .colors span.sel{border-color:#2c2c2a}
 .card{border-radius:10px;padding:10px 12px;margin:6px 0;display:flex;justify-content:space-between;gap:8px;align-items:center}
 .card small{opacity:.8}
-.x{border:0;background:none;font-size:18px;opacity:.6}
+.x{border:0;background:none;font-size:18px;opacity:.7;min-width:44px;min-height:44px}
 .day{display:flex;gap:10px;padding:10px 0;border-top:1px solid #e4e1d8}
 .day.today .dl{font-weight:700;color:#2c2c2a}
 .dl{width:46px;font-size:13px;color:#888;line-height:1.3;flex-shrink:0}
@@ -45,29 +45,35 @@ textarea{min-height:70px;resize:vertical}
 .dead{font-size:13px;color:#993556;padding:4px 0}
 .nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin-bottom:6px}
-.empty{color:#999;font-size:14px;padding:6px 0}
+.empty{color:#777;font-size:14px;padding:6px 0}
 .srow{display:flex;gap:6px;margin:5px 0}.srow input[type=text]{flex:1}.srow input[type=date]{width:130px}
 .combo{position:relative}.combo input{padding-right:42px}.cbtn{position:absolute;right:4px;top:4px;bottom:4px;width:36px;border:0;background:none;font-size:16px;color:#777}
 .dd{position:absolute;left:0;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid #ddd9cf;border-radius:10px;max-height:240px;overflow-y:auto;z-index:10;box-shadow:0 6px 18px rgba(0,0,0,.12)}
 .dd div{padding:11px 12px;display:flex;align-items:center;gap:10px;border-top:1px solid #f0ede5}.dd div:first-child{border-top:0}.dd i{width:14px;height:14px;border-radius:50%;flex-shrink:0}
 .subj{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #e4e1d8}.subj i{width:26px;height:26px;border-radius:50%;cursor:pointer;flex-shrink:0}.subj span{flex:1}
-.hint{font-size:12px;color:#999;margin-top:8px}
+.hint{font-size:12px;color:#6f6f6a;margin-top:8px}
+.sync{font-size:12px;color:#6f6f6a;text-align:center;margin:-2px 0 6px}.sync.err{color:#a32d2d}
+.late{background:#fbe9e9;border-radius:10px;padding:8px 10px;margin-bottom:6px}.late b{font-size:13px;color:#a32d2d;display:block;margin-bottom:5px}
+.toast{position:fixed;left:12px;right:12px;bottom:64px;max-width:496px;margin:0 auto;background:#2c2c2a;color:#fff;border-radius:12px;padding:12px 14px;font-size:14px;display:flex;align-items:center;gap:10px;z-index:30;box-shadow:0 6px 18px rgba(0,0,0,.25)}
+.toast span{flex:1}.toast button{background:none;border:1px solid #fff;color:#fff;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:600}
+.btn:disabled{opacity:.6}
 </style>
 </head>
 <body>
 <main>
 <section id="cal">
   <div class="nav"><button class="btn2" onclick="shiftWeek(-1)">‹</button><h1 id="wk" style="margin:0"></h1><button class="btn2" onclick="shiftWeek(1)">›</button></div>
+  <div class="sync" id="sync"></div>
   <div class="legend" id="legend"></div>
   <div id="days"></div>
-  <button class="btn" onclick="replanAll()">↻ Przeplanuj wszystko</button>
+  <button class="btn" id="rBtn" onclick="replanAll()">↻ Przeplanuj wszystko</button>
   <div class="hint">Stuknij krok, aby oznaczyć jako zrobiony.</div>
 </section>
 <section id="list" hidden>
   <h1 id="fHead">Nowe zadanie</h1>
   <label>Nazwa zadania</label><input id="fTitle" placeholder="np. Przygotowanie na zjazd">
   <label>Przedmiot</label><div class="combo"><input id="fSub" placeholder="np. Psychologia poznawcza" autocomplete="off"><button type="button" class="cbtn" onclick="toggleSubs()">▾</button><div id="subs" class="dd" hidden></div></div>
-  <label>Co dokładnie jest do zrobienia</label><textarea id="fDesc" placeholder="Pisz swobodnie, np.: przeczytać rozdz. 3–5, prezentacja na 10 min. W środy pracuję, w weekendy nie mam czasu."></textarea>
+  <label>Co dokładnie jest do zrobienia</label><textarea id="fDesc" maxlength="2000" placeholder="Pisz swobodnie, np.: przeczytać rozdz. 3–5, prezentacja na 10 min. W środy pracuję, w weekendy nie mam czasu."></textarea>
   <label>Deadline</label><input id="fDl" type="date">
   <label>Kolor przedmiotu</label><div class="colors" id="fCol"></div>
   <div id="fSteps" hidden><label>Kroki (tekst i dzień)</label><div id="stepList"></div><button class="btn2" onclick="addStepRow()">+ krok</button></div>
@@ -84,14 +90,56 @@ textarea{min-height:70px;resize:vertical}
 </main>
 <nav class="tabs"><button id="tCal" class="on" onclick="tab('cal')">📅 Kalendarz</button><button id="tList" onclick="tab('list')">📝 Lista zadań</button></nav>
 <script>
-// Adres Workera z AI (opcjonalnie). Pusty = lokalny algorytm.
 const AI_URL = '/api/plan';
 const COLORS=[['#d9ede3','#0f5a44'],['#dce9f7','#0c447c'],['#f6dde6','#72243e'],['#f8e8cc','#633806'],['#e6e3f8','#3c3489'],['#f3e0d8','#712b13'],['#d6eef2','#0b5563'],['#e9f2d2','#3b5a0e'],['#fbe0d3','#8a2e0a'],['#f0dcf2','#6a1f72'],['#fff2c2','#6b5300'],['#e4e4e1','#3a3a37'],['#d9e2fb','#1f3a8a'],['#fbd9d9','#8a1c1c'],['#d5f2e0','#14532d'],['#f7e3f0','#831843']];
 const DAYS=['Nd','Pon','Wt','Śr','Czw','Pt','Sob'];
-let S, week=0, selCol=0;
+let S, week=0, selCol=0, lock=false;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-function load(){try{const d=JSON.parse(localStorage.getItem('planer'));if(d)return d}catch(e){}return{tasks:[],colors:{}}}
-function save(){try{localStorage.setItem('planer',JSON.stringify(S))}catch(e){}}
+// ===== Dane: chmura (Cloudflare KV) + kopia na urządzeniu (offline) =====
+const LS='planer';
+function norm(d){d=d&&typeof d==='object'?d:{};if(!Array.isArray(d.tasks))d.tasks=[];if(!d.colors||typeof d.colors!=='object')d.colors={};return d}
+function load(){try{return norm(JSON.parse(localStorage.getItem(LS)))}catch(e){return norm()}}
+const meta={get rev(){return+localStorage.getItem('planer_rev')||0},set rev(v){localStorage.setItem('planer_rev',v)},
+  get dirty(){return localStorage.getItem('planer_dirty')==='1'},set dirty(v){localStorage.setItem('planer_dirty',v?'1':'0')}};
+let pushT=null,pushing=false,ver=0;
+function keepLocal(){try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){}}
+function save(){keepLocal();ver++;meta.dirty=true;setSync('Zapisywanie…');clearTimeout(pushT);pushT=setTimeout(push,1200)}
+function setSync(m,err){sync.textContent=m;sync.classList.toggle('err',!!err)}
+async function push(){
+  clearTimeout(pushT);if(pushing){pushT=setTimeout(push,800);return}
+  pushing=true;const v=ver;
+  try{
+    const r=await fetch('/api/data',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:S})});
+    if(!r.ok)throw 0;const j=await r.json();meta.rev=j.rev;
+    if(v===ver){meta.dirty=false;setSync('☁ Zapisano w chmurze')}else pushT=setTimeout(push,800);
+  }catch(e){setSync('⚠ Brak połączenia – zapisano na tym urządzeniu, wyślę do chmury później',1)}
+  finally{pushing=false}
+}
+async function pull(){
+  if(meta.dirty)return push();
+  try{
+    const r=await fetch('/api/data',{cache:'no-store'});if(!r.ok)throw 0;const j=await r.json();
+    if(!j.data){if(S.tasks.length||Object.keys(S.colors).length)return save();setSync('☁ Połączono z chmurą');return}
+    // tylko nowsza wersja z chmury, nigdy w trakcie przeciągania/edycji/przeplanowania
+    if(j.rev>meta.rev&&!meta.dirty&&!drag&&!editId&&!lock){S=norm(j.data);meta.rev=j.rev;keepLocal();render()}
+    setSync('☁ Zapisano w chmurze');
+  }catch(e){setSync('⚠ Brak połączenia – pokazuję dane z tego urządzenia',1)}
+}
+addEventListener('online',pull);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible')return pull();
+  if(meta.dirty)fetch('/api/data',{method:'PUT',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({data:S})})
+    .then(r=>r.ok&&r.json()).then(j=>{if(j){meta.rev=j.rev;meta.dirty=false}}).catch(()=>{});
+});
+setInterval(()=>{if(document.visibilityState==='visible')pull()},60000);
+
+function toast(msg,act,fn,ms=5000){
+  document.getElementById('toast')?.remove();
+  const e=document.createElement('div');e.id='toast';e.className='toast';e.innerHTML=`<span>${esc(msg)}</span>`;
+  if(act){const b=document.createElement('button');b.textContent=act;b.onclick=()=>{e.remove();fn()};e.append(b)}
+  document.body.append(e);clearTimeout(toast.t);toast.t=setTimeout(()=>e.remove(),ms);
+}
 const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10);
 const addD=(s,n)=>{const d=new Date(s+'T12:00');d.setDate(d.getDate()+n);return iso(d)};
 const today=()=>iso(new Date());
@@ -138,14 +186,22 @@ function schedule(list,deadline,skipId){
   });
 }
 
-async function plan(t){
-  if(AI_URL){try{
-    const r=await fetch(AI_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.title,subject:t.subject,desc:t.desc,deadline:t.deadline,today:today(),busy:loads(t.id)})});
+// Plan z AI (given = istniejące kroki do ponownego rozłożenia). null = AI nie odpowiedziało
+async function aiPlan(t,given){
+  const ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),30000);
+  try{
+    const r=await fetch(AI_URL,{method:'POST',signal:ctl.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.title,subject:t.subject,desc:t.desc,deadline:t.deadline,today:today(),busy:loads(t.id),steps:given})});
     const j=await r.json();
     if(Array.isArray(j.steps)&&j.steps.length)return j.steps.map(s=>({text:s.text,date:s.date,done:false}));
-  }catch(e){}}
-  return schedule(steps(t.desc),t.deadline,t.id);
+  }catch(e){}finally{clearTimeout(to)}
+  return null;
 }
+let fellBack=false;
+async function plan(t){
+  const a=await aiPlan(t);fellBack=!a;
+  return a||schedule(steps(t.desc),t.deadline,t.id);
+}
+const FB_MSG='AI teraz nie odpowiada – plan ułożono prostszym algorytmem. Spróbuj później „Przeplanuj wszystko”.';
 
 async function addTask(){
   if(editId)return saveEdit();
@@ -158,9 +214,10 @@ async function addTask(){
   t.steps=await plan(t);
   b.textContent='+ Dodaj i rozplanuj';b.disabled=false;
   S.tasks.push(t);save();fTitle.value='';fDesc.value='';render();tab('cal');
+  if(fellBack)toast(FB_MSG,null,null,8000);
 }
 let editId=null;
-function stepRow(s={text:'',date:today()}){return`<div class="srow"><input type="text" value="${(s.text||'').replace(/"/g,'&quot;')}"><input type="date" value="${s.date}"><button class="x" onclick="this.parentNode.remove()">✕</button></div>`}
+function stepRow(s={text:'',date:today()}){return`<div class="srow"><input type="text" value="${esc(s.text)}"><input type="date" value="${s.date}"><button class="x" onclick="this.parentNode.remove()">✕</button></div>`}
 function addStepRow(){stepList.insertAdjacentHTML('beforeend',stepRow())}
 function edit(id){
   const t=S.tasks.find(t=>t.id===id);editId=id;
@@ -179,21 +236,27 @@ async function saveEdit(){
   const descChanged=desc!==t.desc;
   Object.assign(t,{title:fTitle.value.trim()||sub,subject:sub,desc,deadline:dl});
   S.colors[sub]=selCol;
-  if(descChanged&&confirm('Opis się zmienił. Rozplanować kroki od nowa?')){fBtn.textContent='Planuję z AI…';fBtn.disabled=true;t.steps=await plan(t);fBtn.disabled=false}
+  if(descChanged&&confirm('Opis się zmienił. Rozplanować kroki od nowa?')){fBtn.textContent='Planuję z AI…';fBtn.disabled=true;const done=t.steps.filter(s=>s.done),fresh=await plan(t);fBtn.disabled=false;
+    t.steps=done.concat(fresh.filter(f=>!done.some(d=>d.text===f.text)));if(fellBack)toast(FB_MSG,null,null,8000)}
   else t.steps=rows;
   save();cancelEdit();render();tab('cal');
 }
-function alertMsg(m){let e=document.getElementById('err');if(!e){e=document.createElement('div');e.id='err';e.style.cssText='color:#a32d2d;font-size:13px;margin-top:8px';document.querySelector('#list .btn').after(e)}e.textContent=m;setTimeout(()=>e.textContent='',3000)}
+function alertMsg(m){let e=document.getElementById('err');if(!e){e=document.createElement('div');e.id='err';e.style.cssText='color:#a32d2d;font-size:13px;margin-top:8px';document.querySelector('#list .btn').after(e)}e.textContent=m;setTimeout(()=>e.textContent='',5000)}
 
+// Przeplanuj: AI rozkłada od nowa niezrobione kroki (z zaległymi), z uwzględnieniem próśb z opisu. Zrobione zostają.
 async function replanAll(){
-  const t0=today();
-  for(const t of S.tasks){
-    if(t.deadline<=t0)continue;
-    const done=t.steps.filter(s=>s.done),todo=t.steps.filter(s=>!s.done);
-    t.steps=[];
-    t.steps=done.concat(schedule(todo,t.deadline,t.id));
+  const t0=today(),todo=S.tasks.filter(t=>t.deadline>t0&&t.steps.some(s=>!s.done));
+  if(!todo.length)return toast('Nie ma nic do przeplanowania.');
+  const snap=JSON.stringify(S);let fb=0;lock=true;rBtn.disabled=true;
+  for(const [i,t] of todo.entries()){
+    rBtn.textContent=`Przeplanowuję z AI… ${i+1}/${todo.length}`;
+    const done=t.steps.filter(s=>s.done),open=t.steps.filter(s=>!s.done);
+    let ns=await aiPlan(t,open.map(s=>s.text));
+    if(!ns){fb++;t.steps=done;ns=schedule(open,t.deadline,t.id)}
+    t.steps=done.concat(ns);
   }
-  save();render();
+  lock=false;rBtn.disabled=false;rBtn.textContent='↻ Przeplanuj wszystko';save();render();
+  toast(fb?`Przeplanowano (${fb} zad. prostszym algorytmem – AI nie odpowiada).`:'Przeplanowano z AI.','↶ Cofnij',()=>{S=norm(JSON.parse(snap));save();render();toast('Przywrócono poprzedni plan.')},15000);
 }
 function toggle(id,i){if(dragged)return;const t=S.tasks.find(t=>t.id===id);t.steps[i].done=!t.steps[i].done;save();render()}
 function del(id){if(!confirm('Usunąć zadanie?'))return;S.tasks=S.tasks.filter(t=>t.id!==id);save();render()}
@@ -202,15 +265,20 @@ const col=s=>COLORS[S.colors[s]??0];
 function render(){
   const m=monday(week),t0=today();
   wk.textContent=`${+m.slice(8)}.${m.slice(5,7)} – ${+addD(m,6).slice(8)}.${addD(m,6).slice(5,7)}`;
-  legend.innerHTML=[...new Set(S.tasks.map(t=>t.subject))].map(s=>`<span style="color:${col(s)[1]}">● ${s}</span>`).join('');
+  legend.innerHTML=[...new Set(S.tasks.map(t=>t.subject))].map(s=>`<span style="color:${col(s)[1]}">● ${esc(s)}</span>`).join('');
+  const blk=(t,s,k)=>{const[bg,fg]=col(t.subject);return`<div class="blk${s.done?' done':''}" style="background:${bg};color:${fg}" data-t="${t.id}" data-k="${k}" onclick="toggle(${t.id},${k})">${s.done?'✓ ':''}${esc(s.text)} <small>· ${esc(t.subject)}</small></div>`};
   let h='';
+  if(week===0){
+    const late=[];S.tasks.forEach(t=>t.steps.forEach((s,k)=>{if(!s.done&&s.date<t0)late.push(blk(t,s,k))}));
+    if(late.length)h+=`<div class="late"><b>⚠ Zaległe (${late.length}) – stuknij, gdy zrobione, przytrzymaj i przeciągnij na dzień albo użyj „Przeplanuj wszystko”</b>${late.join('')}</div>`;
+  }
   for(let i=0;i<7;i++){
     const d=addD(m,i),dt=new Date(d+'T12:00');
     let c='';
     S.tasks.forEach(t=>{
-      t.steps.forEach((s,k)=>{if(s.date===d){const[bg,fg]=col(t.subject);c+=`<div class="blk${s.done?' done':''}" style="background:${bg};color:${fg}" data-t="${t.id}" data-k="${k}" onclick="toggle(${t.id},${k})">${s.done?'✓ ':''}${s.text} <small>· ${t.subject}</small></div>`}});
+      t.steps.forEach((s,k)=>{if(s.date===d)c+=blk(t,s,k)});
       if(t.deadline===d){
-        const label = t.title && t.title !== t.subject ? `${t.title} (${t.subject})` : t.subject;
+        const label = esc(t.title && t.title !== t.subject ? `${t.title} (${t.subject})` : t.subject);
         c+=`<div class="dead">⚑ Deadline: ${label}</div>`;
       }
     });
@@ -220,8 +288,8 @@ function render(){
   renderSubj();
   tasks.innerHTML=S.tasks.length?S.tasks.slice().sort((a,b)=>a.deadline<b.deadline?-1:1).map(t=>{
     const[bg,fg]=col(t.subject),d=t.steps.filter(s=>s.done).length;
-    const header=t.title&&t.title!==t.subject?`<b>${t.title}</b> <small>· ${t.subject}</small>`:`<b>${t.subject}</b>`;
-    return`<div class="card" style="background:${bg};color:${fg}"><div>${header}<br><small>${t.desc}</small><br><small>${d}/${t.steps.length} kroków · do ${t.deadline.slice(8)}.${t.deadline.slice(5,7)}</small></div><span style="white-space:nowrap"><button class="x" style="color:${fg}" onclick="edit(${t.id})">✎</button><button class="x" style="color:${fg}" onclick="del(${t.id})">✕</button></span></div>`
+    const header=t.title&&t.title!==t.subject?`<b>${esc(t.title)}</b> <small>· ${esc(t.subject)}</small>`:`<b>${esc(t.subject)}</b>`;
+    return`<div class="card" style="background:${bg};color:${fg}"><div>${header}<br><small>${esc(t.desc)}</small><br><small>${d}/${t.steps.length} kroków · do ${t.deadline.slice(8)}.${t.deadline.slice(5,7)}</small></div><span style="white-space:nowrap"><button class="x" style="color:${fg}" onclick="edit(${t.id})">✎</button><button class="x" style="color:${fg}" onclick="del(${t.id})">✕</button></span></div>`
   }).join(''):'<div class="empty">Dodaj pierwsze zadanie powyżej.</div>';
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
 }
@@ -282,12 +350,12 @@ function delSubj(n){
 function cycleCol(n){S.colors[n]=(S.colors[n]+1)%COLORS.length;save();render()}
 function renderSubj(){
   const L=Object.keys(S.colors).sort((a,b)=>a.localeCompare(b,'pl'));
-  subjList.innerHTML=L.length?L.map((n,i)=>{const[bg,fg]=COLORS[S.colors[n]];return`<div class="subj"><i style="background:${bg};border:2px solid ${fg}" onclick="cycleCol(SL[${i}])"></i><span>${n}</span><button class="x" onclick="delSubj(SL[${i}])">✕</button></div>`}).join(''):'<div class="empty">Brak przedmiotów – dodaj pierwszy.</div>';
+  subjList.innerHTML=L.length?L.map((n,i)=>{const[bg,fg]=COLORS[S.colors[n]];return`<div class="subj"><i style="background:${bg};border:2px solid ${fg}" onclick="cycleCol(SL[${i}])"></i><span>${esc(n)}</span><button class="x" onclick="delSubj(SL[${i}])">✕</button></div>`}).join(''):'<div class="empty">Brak przedmiotów – dodaj pierwszy.</div>';
   window.SL=L;
 }
 function showSubs(all){
   const q=all?'':fSub.value.trim().toLowerCase(),L=Object.keys(S.colors).filter(s=>s.toLowerCase().includes(q)).sort((a,b)=>a.localeCompare(b,'pl'));
-  subs.innerHTML=L.map(s=>`<div data-s="${s.replace(/"/g,'&quot;')}"><i style="background:${COLORS[S.colors[s]][0]};border:2px solid ${COLORS[S.colors[s]][1]}"></i>${s}</div>`).join('');
+  subs.innerHTML=L.map(s=>`<div data-s="${esc(s)}"><i style="background:${COLORS[S.colors[s]][0]};border:2px solid ${COLORS[S.colors[s]][1]}"></i>${esc(s)}</div>`).join('');
   subs.hidden=!L.length;
 }
 function toggleSubs(){if(subs.hidden){showSubs(true);fSub.focus()}else subs.hidden=true}
@@ -297,16 +365,10 @@ subs.addEventListener('pointerdown',e=>{const d=e.target.closest('[data-s]');if(
 document.addEventListener('pointerdown',e=>{if(!e.target.closest('.combo'))subs.hidden=true});
 fSub.addEventListener('change',()=>{if(S.colors[fSub.value]!=null){selCol=S.colors[fSub.value];render()}});
 
-function demo(){
-  S={tasks:[],colors:{'Psychologia poznawcza':0,'Psychometria':1}};
-  let sat=addD(monday(0),5);if(sat<=today())sat=addD(sat,7);
-  [['Przygotowanie na zjazd','Psychologia poznawcza','2 fragmenty książki, prezentacja'],['Egzamin teoretyczny','Psychometria','egzamin z teorii']].forEach(([name,s,d],i)=>{
-    const t={id:i+1,title:name,subject:s,desc:d,deadline:sat};t.steps=schedule(steps(d),sat,t.id);S.tasks.push(t)});
-  return S;
-}
 S=load();
 fDl.min=addD(today(),1);
 render();
+setSync(meta.dirty?'Zapisywanie…':'Łączenie z chmurą…');pull();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');
 </script>
 </body>
