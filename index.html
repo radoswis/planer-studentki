@@ -88,12 +88,13 @@ textarea{min-height:70px;resize:vertical}
   
 </section>
 <section id="all" hidden>
-  <h1>Poczekalnia</h1>
+  <h1 id="wHead">Poczekalnia</h1>
   <div class="hint" style="margin-top:0">Rzeczy, które nie trafiają jeszcze do kalendarza – np. egzamin w lutym. Rozplanujesz je później.</div>
   <label>Nazwa</label><input id="wTitle" placeholder="np. Egzamin z psychopatologii">
   <label>Przedmiot</label><input id="wSub" list="subDl" placeholder="np. Psychopatologia" autocomplete="off"><datalist id="subDl"></datalist>
   <label>Deadline (opcjonalnie)</label><input id="wDl" type="date">
-  <button class="btn" onclick="addWait()">+ Dodaj do poczekalni</button>
+  <button class="btn" id="wBtn" onclick="addWait()">+ Dodaj do poczekalni</button>
+  <button class="btn2" id="wCancel" style="width:100%;margin-top:8px" hidden onclick="wReset()">Anuluj edycję</button>
   <h1 style="margin-top:22px">Wszystko</h1>
   <div id="allList"></div>
 </section>
@@ -359,11 +360,19 @@ function addWait(){
   const title=wTitle.value.trim(),sub=wSub.value.trim(),dl=wDl.value;
   if(!title&&!sub)return toast('Wpisz nazwę albo przedmiot.');
   if(sub&&S.colors[sub]==null){const used=Object.values(S.colors);const c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[sub]=c<0?0:c}
-  S.wait.push({id:Date.now(),title:title||sub,subject:sub,deadline:dl,done:false});
-  wTitle.value='';wSub.value='';wDl.value='';save();render();
+  if(wEditId){const w=S.wait.find(w=>w.id===wEditId);if(w)Object.assign(w,{title:title||sub,subject:sub,deadline:dl})}
+  else S.wait.push({id:Date.now(),title:title||sub,subject:sub,deadline:dl,done:false});
+  wReset();save();render();
+}
+let wEditId=null;
+function wReset(){wEditId=null;wTitle.value='';wSub.value='';wDl.value='';wHead.textContent='Poczekalnia';wBtn.textContent='+ Dodaj do poczekalni';wCancel.hidden=true}
+function wEdit(id){
+  const w=S.wait.find(w=>w.id===id);wEditId=id;
+  wTitle.value=w.title;wSub.value=w.subject;wDl.value=w.deadline||'';
+  wHead.textContent='Edytuj pozycję';wBtn.textContent='💾 Zapisz zmiany';wCancel.hidden=false;scrollTo(0,0);wTitle.focus();
 }
 function wDone(id){const w=S.wait.find(w=>w.id===id);w.done=!w.done;save();render()}
-function wDel(id){if(!confirm('Usunąć z poczekalni?'))return;S.wait=S.wait.filter(w=>w.id!==id);save();render()}
+function wDel(id){if(!confirm('Usunąć z poczekalni?'))return;if(wEditId===id)wReset();S.wait=S.wait.filter(w=>w.id!==id);save();render()}
 function wPlan(id){
   const w=S.wait.find(w=>w.id===id);cancelEdit();fromWait=id;
   fTitle.value=w.title;fSub.value=w.subject;fDl.value=w.deadline>today()?w.deadline:'';fDesc.value='';selCol=S.colors[w.subject]??0;
@@ -384,7 +393,7 @@ function renderAll(){
     const date=it.dl?`${it.dl.slice(8)}.${it.dl.slice(5,7)}`:'';
     const info=it.t?`📅 w kalendarzu · ${it.t.steps.filter(s=>s.done).length}/${it.t.steps.length} kroków`:'⏳ poczekalnia';
     const st=it.done?'✓ zrobione':(it.dl&&it.dl<t0?'po terminie':'');
-    const btns=it.w?`<span style="white-space:nowrap"><button class="x" style="color:${fg}" title="Zrobione" onclick="wDone(${o.id})">${o.done?'↶':'✓'}</button>${o.done?'':`<button class="x" style="color:${fg}" title="Rozplanuj" onclick="wPlan(${o.id})">📅</button>`}<button class="x" style="color:${fg}" onclick="wDel(${o.id})">✕</button></span>`:'';
+    const btns=it.w?`<span style="white-space:nowrap"><button class="x" style="color:${fg}" title="Zrobione" onclick="wDone(${o.id})">${o.done?'↶':'✓'}</button>${o.done?'':`<button class="x" style="color:${fg}" title="Rozplanuj" onclick="wPlan(${o.id})">📅</button>`}<button class="x" style="color:${fg}" title="Edytuj" onclick="wEdit(${o.id})">✎</button><button class="x" style="color:${fg}" onclick="wDel(${o.id})">✕</button></span>`:`<span style="white-space:nowrap"><button class="x" style="color:${fg}" title="Edytuj" onclick="edit(${o.id})">✎</button><button class="x" style="color:${fg}" onclick="del(${o.id})">✕</button></span>`;
     h+=`<div class="card" style="background:${bg};color:${fg};${it.done?'opacity:.55':''}"><div>${name}<br><small>${[date,info,st].filter(Boolean).join(' · ')}</small></div>${btns}</div>`;
   }
   allList.innerHTML=h;
