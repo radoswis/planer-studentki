@@ -57,6 +57,7 @@ textarea{min-height:70px;resize:vertical}
 .toast{position:fixed;left:12px;right:12px;bottom:64px;max-width:496px;margin:0 auto;background:#2c2c2a;color:#fff;border-radius:12px;padding:12px 14px;font-size:14px;display:flex;align-items:center;gap:10px;z-index:30;box-shadow:0 6px 18px rgba(0,0,0,.25)}
 .toast span{flex:1}.toast button{background:none;border:1px solid #fff;color:#fff;border-radius:8px;padding:8px 12px;font-size:14px;font-weight:600}
 .btn:disabled{opacity:.6}
+.bkrow{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid #e4e1d8;font-size:14px}
 </style>
 </head>
 <body>
@@ -97,6 +98,10 @@ textarea{min-height:70px;resize:vertical}
   <button class="btn2" id="wCancel" style="width:100%;margin-top:8px" hidden onclick="wReset()">Anuluj edycję</button>
   <h1 style="margin-top:22px">Wszystko</h1>
   <div id="allList"></div>
+  <details id="bk" style="margin-top:26px"><summary style="font-size:14px;color:#6f6f6a;padding:8px 0;cursor:pointer">🛟 Kopie zapasowe</summary>
+    <div class="hint" style="margin-top:0">Aplikacja codziennie zapisuje kopię danych (trzymana 30 dni). Możesz wrócić do wybranego dnia – obecny stan da się cofnąć.</div>
+    <div id="bkList"></div>
+  </details>
 </section>
 </main>
 <nav class="tabs"><button id="tCal" class="on" onclick="tab('cal')">📅 Kalendarz</button><button id="tList" onclick="tab('list')">📝 Lista zadań</button><button id="tAll" onclick="tab('all')">🗂 Wszystko</button></nav>
@@ -109,20 +114,67 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 
 // ===== Dane: chmura (Cloudflare KV) + kopia na urządzeniu (offline) =====
 const LS='planer';
-function norm(d){d=d&&typeof d==='object'?d:{};if(!Array.isArray(d.tasks))d.tasks=[];if(!d.colors||typeof d.colors!=='object')d.colors={};if(!Array.isArray(d.wait))d.wait=[];return d}
-function load(){try{return norm(JSON.parse(localStorage.getItem(LS)))}catch(e){return norm()}}
+// Porządkuje dane (typy, daty RRRR-MM-DD, id liczbowe) – nic z chmury/pamięci nie wstrzyknie kodu. Ta sama funkcja jest w worker.js
+const DT=/^\d{4}-\d{2}-\d{2}$/;
+function norm(d){
+  d=d&&typeof d==='object'?d:{};let n=0;
+  const id=v=>{v=Number(v);return Number.isSafeInteger(v)?v:Date.now()+ ++n};
+  const str=(v,max)=>typeof v==='string'?v.slice(0,max):'';
+  const date=v=>typeof v==='string'&&DT.test(v)?v:'';
+  const objs=a=>Array.isArray(a)?a.filter(x=>x&&typeof x==='object'):[];
+  const colors={};
+  if(d.colors&&typeof d.colors==='object')for(const[k,v]of Object.entries(d.colors)){
+    if(k==='__proto__')continue;const c=Number(v);colors[k.slice(0,200)]=Number.isInteger(c)&&c>=0&&c<COLORS.length?c:0;
+  }
+  return{
+    tasks:objs(d.tasks).map(t=>({id:id(t.id),title:str(t.title,500),subject:str(t.subject,200),desc:str(t.desc,4000),deadline:date(t.deadline),
+      steps:objs(t.steps).map(s=>({text:str(s.text,500),date:date(s.date),done:s.done===true}))})),
+    colors,
+    wait:objs(d.wait).map(w=>({id:id(w.id),title:str(w.title,500),subject:str(w.subject,200),deadline:date(w.deadline),done:w.done===true}))
+  };
+}
+function load(k=LS){try{return norm(JSON.parse(localStorage.getItem(k)))}catch(e){return norm()}}
 const meta={get rev(){return+localStorage.getItem('planer_rev')||0},set rev(v){localStorage.setItem('planer_rev',v)},
   get dirty(){return localStorage.getItem('planer_dirty')==='1'},set dirty(v){localStorage.setItem('planer_dirty',v?'1':'0')}};
 let pushT=null,pushing=false,ver=0;
 function keepLocal(){try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){}}
+// "baza" = ostatnia wersja uzgodniona z chmurą; potrzebna, by przy konflikcie wiedzieć, co zmieniło to urządzenie
+function setBase(d){try{localStorage.setItem('planer_base',JSON.stringify(d))}catch(e){}}
 function save(){keepLocal();ver++;meta.dirty=true;setSync('Zapisywanie…');clearTimeout(pushT);pushT=setTimeout(push,1200)}
 function setSync(m,err){sync.textContent=m;sync.classList.toggle('err',!!err)}
+// Łączenie trójstronne: dla każdej pozycji – jeśli to urządzenie ją zmieniło/usunęło/dodało, wygrywa wersja lokalna, w przeciwnym razie ta z chmury
+function merge3(b,l,r){
+  const part=(bs,ls,rs,idf)=>{
+    const B=new Map(bs.map(x=>[idf(x),JSON.stringify(x)])),L=new Map(ls.map(x=>[idf(x),x])),R=new Map(rs.map(x=>[idf(x),x]));
+    const out=[];
+    for(const k of new Set([...L.keys(),...R.keys()])){
+      const lx=L.get(k),mine=lx?JSON.stringify(lx)!==B.get(k):B.has(k);
+      let x=mine?lx:R.get(k);
+      const rx=R.get(k);
+      // oba urządzenia zmieniły to samo zadanie: zachowaj "zrobione" z obu stron
+      if(mine&&lx&&rx&&Array.isArray(lx.steps)&&JSON.stringify(rx)!==B.get(k))
+        x={...lx,steps:lx.steps.map(s=>({...s,done:s.done||rx.steps.some(o=>o.text===s.text&&o.done)}))};
+      if(x)out.push(x);
+    }
+    return out;
+  };
+  const ent=o=>Object.entries(o);
+  return norm({tasks:part(b.tasks,l.tasks,r.tasks,t=>t.id),wait:part(b.wait,l.wait,r.wait,w=>w.id),
+    colors:Object.fromEntries(part(ent(b.colors),ent(l.colors),ent(r.colors),e=>e[0]))});
+}
 async function push(){
   clearTimeout(pushT);if(pushing){pushT=setTimeout(push,800);return}
-  pushing=true;const v=ver;
+  pushing=true;const v=ver,sent=JSON.stringify(S);
   try{
-    const r=await fetch('/api/data',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:S})});
-    if(!r.ok)throw 0;const j=await r.json();meta.rev=j.rev;
+    const r=await fetch('/api/data',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:S,base:meta.rev})});
+    if(r.status===409){
+      // inne urządzenie zapisało coś w międzyczasie – łączymy (chyba że trwa edycja/przeplanowanie, wtedy później)
+      const j=await r.json();
+      if(lock||drag){pushT=setTimeout(push,3000);return}
+      S=merge3(load('planer_base'),S,norm(j.data));meta.rev=j.rev;setBase(norm(j.data));keepLocal();render();
+      pushT=setTimeout(push,100);return;
+    }
+    if(!r.ok)throw 0;const j=await r.json();meta.rev=j.rev;setBase(JSON.parse(sent));
     if(v===ver){meta.dirty=false;setSync('☁ Zapisano w chmurze')}else pushT=setTimeout(push,800);
   }catch(e){setSync('⚠ Brak połączenia – zapisano na tym urządzeniu, wyślę do chmury później',1)}
   finally{pushing=false}
@@ -132,16 +184,17 @@ async function pull(){
   try{
     const r=await fetch('/api/data',{cache:'no-store'});if(!r.ok)throw 0;const j=await r.json();
     if(!j.data){if(S.tasks.length||S.wait.length||Object.keys(S.colors).length)return save();setSync('☁ Połączono z chmurą');return}
-    // tylko nowsza wersja z chmury, nigdy w trakcie przeciągania/edycji/przeplanowania
-    if(j.rev>meta.rev&&!meta.dirty&&!drag&&!editId&&!lock){S=norm(j.data);meta.rev=j.rev;keepLocal();render()}
+    // tylko nowsza wersja z chmury, nigdy w trakcie przeciągania/planowania (otwarte formularze same sprawdzają, czy pozycja jeszcze istnieje)
+    if(j.rev>meta.rev&&!meta.dirty&&!drag&&!lock){S=norm(j.data);meta.rev=j.rev;setBase(S);keepLocal();render()}
+    else if(j.rev===meta.rev&&!meta.dirty)setBase(norm(j.data));
     setSync('☁ Zapisano w chmurze');
   }catch(e){setSync('⚠ Brak połączenia – pokazuję dane z tego urządzenia',1)}
 }
 addEventListener('online',pull);
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible')return pull();
-  if(meta.dirty)fetch('/api/data',{method:'PUT',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({data:S})})
-    .then(r=>r.ok&&r.json()).then(j=>{if(j){meta.rev=j.rev;meta.dirty=false}}).catch(()=>{});
+  if(meta.dirty){const sent=JSON.stringify(S);fetch('/api/data',{method:'PUT',keepalive:true,headers:{'Content-Type':'application/json'},body:JSON.stringify({data:S,base:meta.rev})})
+    .then(r=>r.ok&&r.json()).then(j=>{if(j&&sent===JSON.stringify(S)){meta.rev=j.rev;meta.dirty=false;setBase(JSON.parse(sent))}}).catch(()=>{})}
 });
 setInterval(()=>{if(document.visibilityState==='visible')pull()},60000);
 
@@ -203,7 +256,7 @@ async function aiPlan(t,given){
   try{
     const r=await fetch(AI_URL,{method:'POST',signal:ctl.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({title:t.title,subject:t.subject,desc:t.desc,deadline:t.deadline,today:today(),busy:loads(t.id),steps:given})});
     const j=await r.json();
-    if(Array.isArray(j.steps)&&j.steps.length)return j.steps.map(s=>({text:s.text,date:s.date,done:false}));
+    if(Array.isArray(j.steps)&&j.steps.length)return j.steps.map(s=>({text:String(s.text||''),date:DT.test(s.date)?s.date:today(),done:false}));
   }catch(e){}finally{clearTimeout(to)}
   return null;
 }
@@ -219,28 +272,32 @@ async function addTask(){
   const title=fTitle.value.trim(),sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
   if(!sub||!desc||!dl)return alertMsg('Uzupełnij przynajmniej przedmiot, opis i deadline.');
   if(dl<=today())return alertMsg('Deadline musi być w przyszłości.');
-  S.colors[sub]=selCol;
-  const t={id:Date.now(),title:title||sub,subject:sub,desc,deadline:dl};
-  const b=document.querySelector('#list .btn');b.textContent='Planuję z AI…';b.disabled=true;
-  t.steps=await plan(t);
-  b.textContent='+ Dodaj i rozplanuj';b.disabled=false;
-  if(fromWait){S.wait=S.wait.filter(w=>w.id!==fromWait);fromWait=null}
-  S.tasks.push(t);save();fTitle.value='';fDesc.value='';render();tab('cal');
+  const t={id:Date.now(),title:title||sub,subject:sub,desc,deadline:dl},col=selCol,wid=fromWait;
+  // lock: w trakcie planowania synchronizacja nie podmienia danych (inaczej kolor/zadanie mogłyby przepaść)
+  lock=true;fBtn.textContent='Planuję z AI…';fBtn.disabled=true;
+  try{t.steps=await plan(t)}finally{lock=false;fBtn.disabled=false;fBtn.textContent=editId?'💾 Zapisz zmiany':'+ Dodaj i rozplanuj'}
+  S.colors[sub]=col;
+  if(wid){S.wait=S.wait.filter(w=>w.id!==wid);if(wEditId===wid)wReset()}
+  S.tasks.push(t);save();
+  // w trakcie planowania mogła zostać otwarta edycja innej pozycji – wtedy jej nie ruszamy
+  const busyForm=editId||(fromWait&&fromWait!==wid);
+  if(!busyForm)cancelEdit();render();if(!busyForm)tab('cal');
   if(fellBack)toast(FB_MSG,null,null,8000);
 }
 let editId=null;
 function stepRow(s={text:'',date:today()}){return`<div class="srow"><input type="text" value="${esc(s.text)}"><input type="date" value="${s.date}"><button class="x" onclick="this.parentNode.remove()">✕</button></div>`}
 function addStepRow(){stepList.insertAdjacentHTML('beforeend',stepRow())}
 function edit(id){
-  const t=S.tasks.find(t=>t.id===id);editId=id;
+  const t=S.tasks.find(t=>t.id===id);if(!t)return;fromWait=null;editId=id;
   fTitle.value=t.title;fSub.value=t.subject;fDesc.value=t.desc;fDl.value=t.deadline;fDl.min='';selCol=S.colors[t.subject]??0;
   stepList.innerHTML=t.steps.map(stepRow).join('');stepList._done=t.steps.map(s=>s.done);
   fHead.textContent='Edytuj zadanie';fBtn.textContent='💾 Zapisz zmiany';fSteps.hidden=fCancel.hidden=false;
   render();tab('list');scrollTo(0,0);
 }
-function cancelEdit(){editId=null;fromWait=null;fTitle.value='';fDesc.value='';fDl.min=addD(today(),1);fHead.textContent='Nowe zadanie';fBtn.textContent='+ Dodaj i rozplanuj';fSteps.hidden=fCancel.hidden=true;stepList.innerHTML=''}
+function cancelEdit(){editId=null;fromWait=null;fTitle.value='';fDesc.value='';fDl.value='';fDl.min=addD(today(),1);fHead.textContent='Nowe zadanie';fBtn.textContent='+ Dodaj i rozplanuj';fSteps.hidden=fCancel.hidden=true;stepList.innerHTML=''}
 async function saveEdit(){
   const t=S.tasks.find(t=>t.id===editId),sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
+  if(!t){cancelEdit();return alertMsg('To zadanie zostało usunięte (np. na innym urządzeniu).')}
   if(!sub||!desc||!dl)return alertMsg('Uzupełnij przynajmniej przedmiot, opis i deadline.');
   const rows=[...stepList.children].map((r,i)=>{const[a,b]=r.querySelectorAll('input');return{text:a.value.trim(),date:b.value||today(),done:false,_i:i}}).filter(s=>s.text);
   // zachowaj status "zrobione" dla kroków o niezmienionym tekście
@@ -248,7 +305,7 @@ async function saveEdit(){
   const descChanged=desc!==t.desc;
   Object.assign(t,{title:fTitle.value.trim()||sub,subject:sub,desc,deadline:dl});
   S.colors[sub]=selCol;
-  if(descChanged&&confirm('Opis się zmienił. Rozplanować kroki od nowa?')){fBtn.textContent='Planuję z AI…';fBtn.disabled=true;const done=t.steps.filter(s=>s.done),fresh=await plan(t);fBtn.disabled=false;
+  if(descChanged&&confirm('Opis się zmienił. Rozplanować kroki od nowa?')){fBtn.textContent='Planuję z AI…';fBtn.disabled=lock=true;const done=t.steps.filter(s=>s.done);let fresh;try{fresh=await plan(t)}finally{fBtn.disabled=lock=false}
     t.steps=done.concat(fresh.filter(f=>!done.some(d=>d.text===f.text)));if(fellBack)toast(FB_MSG,null,null,8000)}
   else t.steps=rows;
   save();cancelEdit();render();tab('cal');
@@ -259,18 +316,22 @@ function alertMsg(m){let e=document.getElementById('err');if(!e){e=document.crea
 async function replanAll(){
   const t0=today(),todo=S.tasks.filter(t=>t.deadline>t0&&t.steps.some(s=>!s.done));
   if(!todo.length)return toast('Nie ma nic do przeplanowania.');
-  const snap=JSON.stringify(S);let fb=0;lock=true;rBtn.disabled=true;
+  const snap=JSON.stringify(S);let fb=0,big=0;lock=true;rBtn.disabled=true;
   for(const [i,t] of todo.entries()){
     rBtn.textContent=`Przeplanowuję z AI… ${i+1}/${todo.length}`;
     const done=t.steps.filter(s=>s.done),open=t.steps.filter(s=>!s.done);
-    let ns=await aiPlan(t,open.map(s=>s.text));
-    if(!ns){fb++;t.steps=done;ns=schedule(open,t.deadline,t.id)}
+    // AI dostaje max 40 kroków; zawsze zachowujemy oryginalne nazwy, a liczba kroków musi się zgadzać
+    if(open.length>40)big++;
+    let ns=open.length<=40?await aiPlan(t,open.map(s=>s.text)):null;
+    if(ns&&ns.length===open.length)ns=ns.map((s,i)=>({text:open[i].text,date:DT.test(s.date)?s.date:open[i].date,done:false}));
+    else{if(open.length<=40)fb++;t.steps=done;ns=schedule(open,t.deadline,t.id)}
     t.steps=done.concat(ns);
   }
   lock=false;rBtn.disabled=false;rBtn.textContent='↻ Przeplanuj wszystko';save();render();
-  toast(fb?`Przeplanowano (${fb} zad. prostszym algorytmem – AI nie odpowiada).`:'Przeplanowano z AI.','↶ Cofnij',()=>{S=norm(JSON.parse(snap));save();render();toast('Przywrócono poprzedni plan.')},15000);
+  const why=[fb&&`${fb} zad. prostszym algorytmem – AI nie odpowiada`,big&&`${big} zad. ma ponad 40 kroków, więc ułożono je prostszym algorytmem`].filter(Boolean);
+  toast(why.length?`Przeplanowano (${why.join('; ')}).`:'Przeplanowano z AI.','↶ Cofnij',()=>{if(lock)return toast('Poczekaj, aż skończy się planowanie.');S=norm(JSON.parse(snap));save();render();toast('Przywrócono poprzedni plan.')},15000);
 }
-function toggle(id,i){if(dragged)return;const t=S.tasks.find(t=>t.id===id);t.steps[i].done=!t.steps[i].done;save();render()}
+function toggle(id,i){if(dragged)return;const t=S.tasks.find(t=>t.id===id);if(!t||!t.steps[i])return;t.steps[i].done=!t.steps[i].done;save();render()}
 function del(id){if(!confirm('Usunąć zadanie?'))return;S.tasks=S.tasks.filter(t=>t.id!==id);save();render()}
 const col=s=>COLORS[S.colors[s]??0];
 
@@ -349,7 +410,7 @@ function endDrag(){
   clearTimeout(pressT);if(!drag)return;
   clearInterval(drag.edgeT);drag.g.remove();eL.style.display=eR.style.display='none';
   const d=document.elementFromPoint(drag.x,drag.y)?.closest('.day');over();
-  if(d){const t=S.tasks.find(t=>t.id===drag.id);t.steps[drag.k].date=d.dataset.d;save()}
+  if(d){const t=S.tasks.find(t=>t.id===drag.id);if(t&&t.steps[drag.k]){t.steps[drag.k].date=d.dataset.d;save()}}
   drag=null;dragged=true;setTimeout(()=>dragged=false,400);render();
 }
 
@@ -360,36 +421,39 @@ function addWait(){
   const title=wTitle.value.trim(),sub=wSub.value.trim(),dl=wDl.value;
   if(!title&&!sub)return toast('Wpisz nazwę albo przedmiot.');
   if(sub&&S.colors[sub]==null){const used=Object.values(S.colors);const c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[sub]=c<0?0:c}
-  if(wEditId){const w=S.wait.find(w=>w.id===wEditId);if(w)Object.assign(w,{title:title||sub,subject:sub,deadline:dl})}
+  const w=wEditId&&S.wait.find(w=>w.id===wEditId);
+  if(w)Object.assign(w,{title:title||sub,subject:sub,deadline:dl});
   else S.wait.push({id:Date.now(),title:title||sub,subject:sub,deadline:dl,done:false});
   wReset();save();render();
 }
 let wEditId=null;
 function wReset(){wEditId=null;wTitle.value='';wSub.value='';wDl.value='';wHead.textContent='Poczekalnia';wBtn.textContent='+ Dodaj do poczekalni';wCancel.hidden=true}
 function wEdit(id){
-  const w=S.wait.find(w=>w.id===id);wEditId=id;
+  const w=S.wait.find(w=>w.id===id);if(!w)return;wEditId=id;
   wTitle.value=w.title;wSub.value=w.subject;wDl.value=w.deadline||'';
   wHead.textContent='Edytuj pozycję';wBtn.textContent='💾 Zapisz zmiany';wCancel.hidden=false;scrollTo(0,0);wTitle.focus();
 }
-function wDone(id){const w=S.wait.find(w=>w.id===id);w.done=!w.done;save();render()}
+function wDone(id){const w=S.wait.find(w=>w.id===id);if(!w)return;w.done=!w.done;save();render()}
 function wDel(id){if(!confirm('Usunąć z poczekalni?'))return;if(wEditId===id)wReset();S.wait=S.wait.filter(w=>w.id!==id);save();render()}
 function wPlan(id){
-  const w=S.wait.find(w=>w.id===id);cancelEdit();fromWait=id;
+  const w=S.wait.find(w=>w.id===id);if(!w)return;cancelEdit();fromWait=id;
   fTitle.value=w.title;fSub.value=w.subject;fDl.value=w.deadline>today()?w.deadline:'';fDesc.value='';selCol=S.colors[w.subject]??0;
+  fHead.textContent='Rozplanuj z poczekalni';fCancel.hidden=false;
   render();tab('list');scrollTo(0,0);fDesc.focus();
   toast('Opisz, co jest do zrobienia, i stuknij „Dodaj i rozplanuj”.');
 }
 function renderAll(){
+  if(wEditId&&!S.wait.some(w=>w.id===wEditId))wReset();
   subDl.innerHTML=Object.keys(S.colors).map(n=>`<option value="${esc(n)}">`).join('');
   const items=S.tasks.map(t=>({t,dl:t.deadline,done:t.steps.length>0&&t.steps.every(s=>s.done)})).concat(S.wait.map(w=>({w,dl:w.deadline||'',done:w.done})));
   if(!items.length){allList.innerHTML='<div class="empty">Na razie pusto.</div>';return}
-  items.sort((a,b)=>!a.dl?1:!b.dl?-1:a.dl<b.dl?-1:a.dl>b.dl?1:0);
+  items.sort((a,b)=>!a.dl&&!b.dl?0:!a.dl?1:!b.dl?-1:a.dl.localeCompare(b.dl));
   let h='',last=null;const t0=today();
   for(const it of items){
     const o=it.t||it.w,[bg,fg]=col(o.subject);
     const grp=it.dl?MON[+it.dl.slice(5,7)-1]+' '+it.dl.slice(0,4):'Bez daty';
     if(grp!==last){h+=`<h2 style="font-size:15px;margin:16px 0 4px;color:#777">${grp}</h2>`;last=grp}
-    const name=o.title&&o.title!==o.subject?`<b>${esc(o.title)}</b>${o.subject?` <small>· ${esc(o.subject)}</small>`:''}`:`<b>${esc(o.subject||o.title)}</b>`;
+    const name=o.title&&o.title!==o.subject?`<b>${esc(o.title)}</b>${o.subject?` <small>· ${esc(o.subject)}</small>`:''}`:`<b>${esc(o.subject||o.title||'(bez nazwy)')}</b>`;
     const date=it.dl?`${it.dl.slice(8)}.${it.dl.slice(5,7)}`:'';
     const info=it.t?`📅 w kalendarzu · ${it.t.steps.filter(s=>s.done).length}/${it.t.steps.length} kroków`:'⏳ poczekalnia';
     const st=it.done?'✓ zrobione':(it.dl&&it.dl<t0?'po terminie':'');
@@ -398,7 +462,24 @@ function renderAll(){
   }
   allList.innerHTML=h;
 }
-function tab(x){cal.hidden=x!=='cal';list.hidden=x!=='list';all.hidden=x!=='all';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list');tAll.classList.toggle('on',x==='all')}
+// ===== Kopie zapasowe =====
+const bkName=k=>{const m=k.match(/(\d{4})-(\d{2})-(\d{2})$/);return m?`${+m[3]}.${m[2]}.${m[1]}${k.includes('manual')?' (ręczna)':' – stan z początku dnia'}`:k};
+async function loadBackups(){
+  bkList.innerHTML='<div class="empty">Wczytuję…</div>';
+  try{const r=await fetch('/api/backups',{cache:'no-store'});if(!r.ok)throw 0;const{backups:L}=await r.json();
+    bkList.innerHTML=L.length?L.map(k=>`<div class="bkrow"><span>${esc(bkName(k))}</span><button class="btn2" data-k="${esc(k)}">Przywróć</button></div>`).join(''):'<div class="empty">Na razie brak kopii.</div>';
+  }catch(e){bkList.innerHTML='<div class="empty">Brak połączenia – kopie są dostępne tylko online.</div>'}
+}
+bk.addEventListener('toggle',()=>{if(bk.open)loadBackups()});
+bkList.addEventListener('click',async e=>{
+  const k=e.target.closest('[data-k]')?.dataset.k;if(!k||lock)return;
+  if(!confirm(`Przywrócić dane z kopii: ${bkName(k)}?\nObecne dane zostaną zastąpione (możesz to cofnąć).`))return;
+  try{const r=await fetch('/api/backups?key='+encodeURIComponent(k),{cache:'no-store'});if(!r.ok)throw 0;const j=await r.json();if(!j.data)throw 0;
+    const snap=JSON.stringify(S);cancelEdit();wReset();S=norm(j.data);save();render();
+    toast('Przywrócono kopię.','↶ Cofnij',()=>{if(lock)return toast('Poczekaj, aż skończy się planowanie.');S=norm(JSON.parse(snap));save();render();toast('Cofnięto przywrócenie.')},15000);
+  }catch(e){toast('Nie udało się pobrać kopii.')}
+});
+function tab(x){if(x!=='list'&&fromWait&&!editId&&!lock)cancelEdit();cal.hidden=x!=='cal';list.hidden=x!=='list';all.hidden=x!=='all';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list');tAll.classList.toggle('on',x==='all')}
 function addSubj(){const n=nSub.value.trim();if(!n)return;if(S.colors[n]==null){const used=Object.values(S.colors);let c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[n]=c<0?0:c;save()}nSub.value='';render()}
 function delSubj(n){
   const k=S.tasks.filter(t=>t.subject===n).length+S.wait.filter(w=>w.subject===n).length;
