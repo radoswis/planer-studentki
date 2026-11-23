@@ -289,7 +289,7 @@ function stepRow(s={text:'',date:today()}){return`<div class="srow"><input type=
 function addStepRow(){stepList.insertAdjacentHTML('beforeend',stepRow())}
 function edit(id){
   const t=S.tasks.find(t=>t.id===id);if(!t)return;fromWait=null;editId=id;
-  fTitle.value=t.title;fSub.value=t.subject;fDesc.value=t.desc;fDl.value=t.deadline;fDl.min='';selCol=S.colors[t.subject]??0;
+  fTitle.value=t.title;fSub.value=t.subject;fDesc.value=t.desc;fDl.value=t.deadline;fDl.min='';selCol=cIdx(t.subject);
   stepList.innerHTML=t.steps.map(stepRow).join('');stepList._done=t.steps.map(s=>s.done);
   fHead.textContent='Edytuj zadanie';fBtn.textContent='💾 Zapisz zmiany';fSteps.hidden=fCancel.hidden=false;
   render();tab('list');scrollTo(0,0);
@@ -333,7 +333,9 @@ async function replanAll(){
 }
 function toggle(id,i){if(dragged)return;const t=S.tasks.find(t=>t.id===id);if(!t||!t.steps[i])return;t.steps[i].done=!t.steps[i].done;save();render()}
 function del(id){if(!confirm('Usunąć zadanie?'))return;S.tasks=S.tasks.filter(t=>t.id!==id);save();render()}
-const col=s=>COLORS[S.colors[s]??0];
+// tylko własne klucze (przedmiot "constructor" nie może sięgnąć do wbudowanych pól obiektu)
+const cIdx=s=>Object.hasOwn(S.colors,s)?S.colors[s]:0;
+const col=s=>COLORS[cIdx(s)];
 
 function render(){
   const m=monday(week),t0=today();
@@ -420,7 +422,7 @@ const MON=['Styczeń','Luty','Marzec','Kwiecień','Maj','Czerwiec','Lipiec','Sie
 function addWait(){
   const title=wTitle.value.trim(),sub=wSub.value.trim(),dl=wDl.value;
   if(!title&&!sub)return toast('Wpisz nazwę albo przedmiot.');
-  if(sub&&S.colors[sub]==null){const used=Object.values(S.colors);const c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[sub]=c<0?0:c}
+  if(sub&&!Object.hasOwn(S.colors,sub)){const used=Object.values(S.colors);const c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[sub]=c<0?0:c}
   const w=wEditId&&S.wait.find(w=>w.id===wEditId);
   if(w)Object.assign(w,{title:title||sub,subject:sub,deadline:dl});
   else S.wait.push({id:Date.now(),title:title||sub,subject:sub,deadline:dl,done:false});
@@ -437,7 +439,7 @@ function wDone(id){const w=S.wait.find(w=>w.id===id);if(!w)return;w.done=!w.done
 function wDel(id){if(!confirm('Usunąć z poczekalni?'))return;if(wEditId===id)wReset();S.wait=S.wait.filter(w=>w.id!==id);save();render()}
 function wPlan(id){
   const w=S.wait.find(w=>w.id===id);if(!w)return;cancelEdit();fromWait=id;
-  fTitle.value=w.title;fSub.value=w.subject;fDl.value=w.deadline>today()?w.deadline:'';fDesc.value='';selCol=S.colors[w.subject]??0;
+  fTitle.value=w.title;fSub.value=w.subject;fDl.value=w.deadline>today()?w.deadline:'';fDesc.value='';selCol=cIdx(w.subject);
   fHead.textContent='Rozplanuj z poczekalni';fCancel.hidden=false;
   render();tab('list');scrollTo(0,0);fDesc.focus();
   toast('Opisz, co jest do zrobienia, i stuknij „Dodaj i rozplanuj”.');
@@ -480,13 +482,13 @@ bkList.addEventListener('click',async e=>{
   }catch(e){toast('Nie udało się pobrać kopii.')}
 });
 function tab(x){if(x!=='list'&&fromWait&&!editId&&!lock)cancelEdit();cal.hidden=x!=='cal';list.hidden=x!=='list';all.hidden=x!=='all';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list');tAll.classList.toggle('on',x==='all')}
-function addSubj(){const n=nSub.value.trim();if(!n)return;if(S.colors[n]==null){const used=Object.values(S.colors);let c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[n]=c<0?0:c;save()}nSub.value='';render()}
+function addSubj(){const n=nSub.value.trim();if(!n)return;if(!Object.hasOwn(S.colors,n)){const used=Object.values(S.colors);let c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[n]=c<0?0:c;save()}nSub.value='';render()}
 function delSubj(n){
   const k=S.tasks.filter(t=>t.subject===n).length+S.wait.filter(w=>w.subject===n).length;
   if(!confirm(k?`Przedmiot „${n}” ma ${k} zadań. Usunąć przedmiot razem z zadaniami?`:`Usunąć przedmiot „${n}”?`))return;
   S.tasks=S.tasks.filter(t=>t.subject!==n);S.wait=S.wait.filter(w=>w.subject!==n);delete S.colors[n];save();render();
 }
-function cycleCol(n){S.colors[n]=(S.colors[n]+1)%COLORS.length;save();render()}
+function cycleCol(n){S.colors[n]=(cIdx(n)+1)%COLORS.length;save();render()}
 function renderSubj(){
   const L=Object.keys(S.colors).sort((a,b)=>a.localeCompare(b,'pl'));
   subjList.innerHTML=L.length?L.map((n,i)=>{const[bg,fg]=COLORS[S.colors[n]];return`<div class="subj"><i style="background:${bg};border:2px solid ${fg}" onclick="cycleCol(SL[${i}])"></i><span>${esc(n)}</span><button class="x" onclick="delSubj(SL[${i}])">✕</button></div>`}).join(''):'<div class="empty">Brak przedmiotów – dodaj pierwszy.</div>';
@@ -500,9 +502,9 @@ function showSubs(all){
 function toggleSubs(){if(subs.hidden){showSubs(true);fSub.focus()}else subs.hidden=true}
 fSub.addEventListener('focus',()=>showSubs(true));
 fSub.addEventListener('input',()=>showSubs(false));
-subs.addEventListener('pointerdown',e=>{const d=e.target.closest('[data-s]');if(!d)return;e.preventDefault();fSub.value=d.dataset.s;selCol=S.colors[fSub.value];subs.hidden=true;render()});
+subs.addEventListener('pointerdown',e=>{const d=e.target.closest('[data-s]');if(!d)return;e.preventDefault();fSub.value=d.dataset.s;selCol=cIdx(fSub.value);subs.hidden=true;render()});
 document.addEventListener('pointerdown',e=>{if(!e.target.closest('.combo'))subs.hidden=true});
-fSub.addEventListener('change',()=>{if(S.colors[fSub.value]!=null){selCol=S.colors[fSub.value];render()}});
+fSub.addEventListener('change',()=>{if(Object.hasOwn(S.colors,fSub.value)){selCol=cIdx(fSub.value);render()}});
 
 S=load();
 fDl.min=addD(today(),1);
