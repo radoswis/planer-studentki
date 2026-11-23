@@ -15,7 +15,7 @@
 body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#f7f5f0;color:#2c2c2a}
 main{max-width:520px;margin:0 auto;padding:12px 14px 90px}
 .tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid #e4e1d8;z-index:5}
-.tabs button{flex:1;padding:14px;border:0;background:none;font-size:15px;color:#888}
+.tabs button{flex:1;padding:14px 4px;border:0;background:none;font-size:15px;color:#888}
 .tabs button.on{color:#2c2c2a;font-weight:600}
 h1{font-size:20px;font-weight:600;margin:6px 0 12px}
 label{display:block;font-size:13px;color:#777;margin:10px 0 4px}
@@ -87,8 +87,18 @@ textarea{min-height:70px;resize:vertical}
   <div class="hint">Stuknij kółko, aby zmienić kolor przedmiotu.</div>
   
 </section>
+<section id="all" hidden>
+  <h1>Poczekalnia</h1>
+  <div class="hint" style="margin-top:0">Rzeczy, które nie trafiają jeszcze do kalendarza – np. egzamin w lutym. Rozplanujesz je później.</div>
+  <label>Nazwa</label><input id="wTitle" placeholder="np. Egzamin z psychopatologii">
+  <label>Przedmiot</label><input id="wSub" list="subDl" placeholder="np. Psychopatologia" autocomplete="off"><datalist id="subDl"></datalist>
+  <label>Deadline (opcjonalnie)</label><input id="wDl" type="date">
+  <button class="btn" onclick="addWait()">+ Dodaj do poczekalni</button>
+  <h1 style="margin-top:22px">Wszystko</h1>
+  <div id="allList"></div>
+</section>
 </main>
-<nav class="tabs"><button id="tCal" class="on" onclick="tab('cal')">📅 Kalendarz</button><button id="tList" onclick="tab('list')">📝 Lista zadań</button></nav>
+<nav class="tabs"><button id="tCal" class="on" onclick="tab('cal')">📅 Kalendarz</button><button id="tList" onclick="tab('list')">📝 Lista zadań</button><button id="tAll" onclick="tab('all')">🗂 Wszystko</button></nav>
 <script>
 const AI_URL = '/api/plan';
 const COLORS=[['#d9ede3','#0f5a44'],['#dce9f7','#0c447c'],['#f6dde6','#72243e'],['#f8e8cc','#633806'],['#e6e3f8','#3c3489'],['#f3e0d8','#712b13'],['#d6eef2','#0b5563'],['#e9f2d2','#3b5a0e'],['#fbe0d3','#8a2e0a'],['#f0dcf2','#6a1f72'],['#fff2c2','#6b5300'],['#e4e4e1','#3a3a37'],['#d9e2fb','#1f3a8a'],['#fbd9d9','#8a1c1c'],['#d5f2e0','#14532d'],['#f7e3f0','#831843']];
@@ -98,7 +108,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 
 // ===== Dane: chmura (Cloudflare KV) + kopia na urządzeniu (offline) =====
 const LS='planer';
-function norm(d){d=d&&typeof d==='object'?d:{};if(!Array.isArray(d.tasks))d.tasks=[];if(!d.colors||typeof d.colors!=='object')d.colors={};return d}
+function norm(d){d=d&&typeof d==='object'?d:{};if(!Array.isArray(d.tasks))d.tasks=[];if(!d.colors||typeof d.colors!=='object')d.colors={};if(!Array.isArray(d.wait))d.wait=[];return d}
 function load(){try{return norm(JSON.parse(localStorage.getItem(LS)))}catch(e){return norm()}}
 const meta={get rev(){return+localStorage.getItem('planer_rev')||0},set rev(v){localStorage.setItem('planer_rev',v)},
   get dirty(){return localStorage.getItem('planer_dirty')==='1'},set dirty(v){localStorage.setItem('planer_dirty',v?'1':'0')}};
@@ -120,7 +130,7 @@ async function pull(){
   if(meta.dirty)return push();
   try{
     const r=await fetch('/api/data',{cache:'no-store'});if(!r.ok)throw 0;const j=await r.json();
-    if(!j.data){if(S.tasks.length||Object.keys(S.colors).length)return save();setSync('☁ Połączono z chmurą');return}
+    if(!j.data){if(S.tasks.length||S.wait.length||Object.keys(S.colors).length)return save();setSync('☁ Połączono z chmurą');return}
     // tylko nowsza wersja z chmury, nigdy w trakcie przeciągania/edycji/przeplanowania
     if(j.rev>meta.rev&&!meta.dirty&&!drag&&!editId&&!lock){S=norm(j.data);meta.rev=j.rev;keepLocal();render()}
     setSync('☁ Zapisano w chmurze');
@@ -213,6 +223,7 @@ async function addTask(){
   const b=document.querySelector('#list .btn');b.textContent='Planuję z AI…';b.disabled=true;
   t.steps=await plan(t);
   b.textContent='+ Dodaj i rozplanuj';b.disabled=false;
+  if(fromWait){S.wait=S.wait.filter(w=>w.id!==fromWait);fromWait=null}
   S.tasks.push(t);save();fTitle.value='';fDesc.value='';render();tab('cal');
   if(fellBack)toast(FB_MSG,null,null,8000);
 }
@@ -226,7 +237,7 @@ function edit(id){
   fHead.textContent='Edytuj zadanie';fBtn.textContent='💾 Zapisz zmiany';fSteps.hidden=fCancel.hidden=false;
   render();tab('list');scrollTo(0,0);
 }
-function cancelEdit(){editId=null;fTitle.value='';fDesc.value='';fDl.min=addD(today(),1);fHead.textContent='Nowe zadanie';fBtn.textContent='+ Dodaj i rozplanuj';fSteps.hidden=fCancel.hidden=true;stepList.innerHTML=''}
+function cancelEdit(){editId=null;fromWait=null;fTitle.value='';fDesc.value='';fDl.min=addD(today(),1);fHead.textContent='Nowe zadanie';fBtn.textContent='+ Dodaj i rozplanuj';fSteps.hidden=fCancel.hidden=true;stepList.innerHTML=''}
 async function saveEdit(){
   const t=S.tasks.find(t=>t.id===editId),sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
   if(!sub||!desc||!dl)return alertMsg('Uzupełnij przynajmniej przedmiot, opis i deadline.');
@@ -291,6 +302,7 @@ function render(){
     const header=t.title&&t.title!==t.subject?`<b>${esc(t.title)}</b> <small>· ${esc(t.subject)}</small>`:`<b>${esc(t.subject)}</b>`;
     return`<div class="card" style="background:${bg};color:${fg}"><div>${header}<br><small>${d}/${t.steps.length} kroków · do ${t.deadline.slice(8)}.${t.deadline.slice(5,7)}</small></div><span style="white-space:nowrap"><button class="x" style="color:${fg}" onclick="edit(${t.id})">✎</button><button class="x" style="color:${fg}" onclick="del(${t.id})">✕</button></span></div>`
   }).join(''):'<div class="empty">Dodaj pierwsze zadanie powyżej.</div>';
+  renderAll();
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
 }
 function shiftWeek(n){week+=n;render();days.style.transform='';days.classList.remove('inL','inR');void days.offsetWidth;days.classList.add(n>0?'inL':'inR')}
@@ -340,12 +352,49 @@ function endDrag(){
   drag=null;dragged=true;setTimeout(()=>dragged=false,400);render();
 }
 
-function tab(x){cal.hidden=x!=='cal';list.hidden=x!=='list';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list')}
+// ===== Zakładka „Wszystko” + poczekalnia =====
+let fromWait=null;
+const MON=['Styczeń','Luty','Marzec','Kwiecień','Maj','Czerwiec','Lipiec','Sierpień','Wrzesień','Październik','Listopad','Grudzień'];
+function addWait(){
+  const title=wTitle.value.trim(),sub=wSub.value.trim(),dl=wDl.value;
+  if(!title&&!sub)return toast('Wpisz nazwę albo przedmiot.');
+  if(sub&&S.colors[sub]==null){const used=Object.values(S.colors);const c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[sub]=c<0?0:c}
+  S.wait.push({id:Date.now(),title:title||sub,subject:sub,deadline:dl,done:false});
+  wTitle.value='';wSub.value='';wDl.value='';save();render();
+}
+function wDone(id){const w=S.wait.find(w=>w.id===id);w.done=!w.done;save();render()}
+function wDel(id){if(!confirm('Usunąć z poczekalni?'))return;S.wait=S.wait.filter(w=>w.id!==id);save();render()}
+function wPlan(id){
+  const w=S.wait.find(w=>w.id===id);cancelEdit();fromWait=id;
+  fTitle.value=w.title;fSub.value=w.subject;fDl.value=w.deadline>today()?w.deadline:'';fDesc.value='';selCol=S.colors[w.subject]??0;
+  render();tab('list');scrollTo(0,0);fDesc.focus();
+  toast('Opisz, co jest do zrobienia, i stuknij „Dodaj i rozplanuj”.');
+}
+function renderAll(){
+  subDl.innerHTML=Object.keys(S.colors).map(n=>`<option value="${esc(n)}">`).join('');
+  const items=S.tasks.map(t=>({t,dl:t.deadline,done:t.steps.length>0&&t.steps.every(s=>s.done)})).concat(S.wait.map(w=>({w,dl:w.deadline||'',done:w.done})));
+  if(!items.length){allList.innerHTML='<div class="empty">Na razie pusto.</div>';return}
+  items.sort((a,b)=>!a.dl?1:!b.dl?-1:a.dl<b.dl?-1:a.dl>b.dl?1:0);
+  let h='',last=null;const t0=today();
+  for(const it of items){
+    const o=it.t||it.w,[bg,fg]=col(o.subject);
+    const grp=it.dl?MON[+it.dl.slice(5,7)-1]+' '+it.dl.slice(0,4):'Bez daty';
+    if(grp!==last){h+=`<h2 style="font-size:15px;margin:16px 0 4px;color:#777">${grp}</h2>`;last=grp}
+    const name=o.title&&o.title!==o.subject?`<b>${esc(o.title)}</b>${o.subject?` <small>· ${esc(o.subject)}</small>`:''}`:`<b>${esc(o.subject||o.title)}</b>`;
+    const date=it.dl?`${it.dl.slice(8)}.${it.dl.slice(5,7)}`:'';
+    const info=it.t?`📅 w kalendarzu · ${it.t.steps.filter(s=>s.done).length}/${it.t.steps.length} kroków`:'⏳ poczekalnia';
+    const st=it.done?'✓ zrobione':(it.dl&&it.dl<t0?'po terminie':'');
+    const btns=it.w?`<span style="white-space:nowrap"><button class="x" style="color:${fg}" title="Zrobione" onclick="wDone(${o.id})">${o.done?'↶':'✓'}</button>${o.done?'':`<button class="x" style="color:${fg}" title="Rozplanuj" onclick="wPlan(${o.id})">📅</button>`}<button class="x" style="color:${fg}" onclick="wDel(${o.id})">✕</button></span>`:'';
+    h+=`<div class="card" style="background:${bg};color:${fg};${it.done?'opacity:.55':''}"><div>${name}<br><small>${[date,info,st].filter(Boolean).join(' · ')}</small></div>${btns}</div>`;
+  }
+  allList.innerHTML=h;
+}
+function tab(x){cal.hidden=x!=='cal';list.hidden=x!=='list';all.hidden=x!=='all';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list');tAll.classList.toggle('on',x==='all')}
 function addSubj(){const n=nSub.value.trim();if(!n)return;if(S.colors[n]==null){const used=Object.values(S.colors);let c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[n]=c<0?0:c;save()}nSub.value='';render()}
 function delSubj(n){
-  const k=S.tasks.filter(t=>t.subject===n).length;
+  const k=S.tasks.filter(t=>t.subject===n).length+S.wait.filter(w=>w.subject===n).length;
   if(!confirm(k?`Przedmiot „${n}” ma ${k} zadań. Usunąć przedmiot razem z zadaniami?`:`Usunąć przedmiot „${n}”?`))return;
-  S.tasks=S.tasks.filter(t=>t.subject!==n);delete S.colors[n];save();render();
+  S.tasks=S.tasks.filter(t=>t.subject!==n);S.wait=S.wait.filter(w=>w.subject!==n);delete S.colors[n];save();render();
 }
 function cycleCol(n){S.colors[n]=(S.colors[n]+1)%COLORS.length;save();render()}
 function renderSubj(){
