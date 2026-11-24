@@ -43,7 +43,19 @@ textarea{min-height:70px;resize:vertical}
 .edge{position:fixed;top:0;bottom:0;width:28px;z-index:19;background:rgba(127,127,127,.25);display:none}
 .blk.done{opacity:.45;text-decoration:line-through}
 .dead{font-size:13px;color:#993556;padding:4px 0}
-.nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:6px}
+.wkbtn{flex:1;border:0;background:none;font:inherit;font-size:20px;font-weight:600;color:#2c2c2a;padding:6px 4px;border-radius:10px;cursor:pointer}
+.wkbtn::after{content:' ▾';font-size:13px;color:#888;font-weight:400}
+.wkbtn[aria-expanded=true]{background:#ece9e1}
+.jump{background:#fff;border:1px solid #ddd9cf;border-radius:12px;padding:10px;margin-bottom:8px;box-shadow:0 6px 18px rgba(0,0,0,.08)}
+.jump .yr{font-size:12px;color:#777;margin:8px 2px 4px}.jump .yr:first-child{margin-top:0}
+.mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.mgrid button{position:relative;padding:10px 2px;border:1px solid #e4e1d8;border-radius:9px;background:#faf9f6;font-size:14px;color:#2c2c2a}
+.mgrid button.cur{border-color:#2c2c2a;font-weight:600}
+.mgrid button.has::after{content:'';position:absolute;top:5px;right:6px;width:6px;height:6px;border-radius:50%;background:#993556}
+.jrow{display:flex;gap:8px;align-items:center;margin-top:10px}.jrow label{margin:0;flex-shrink:0}.jrow input{flex:1;padding:8px}
+.today-btn{display:block;width:100%;margin-top:8px}
+.day.hl{animation:hl 1.6s ease-out}@keyframes hl{0%,40%{background:rgba(153,53,86,.16);border-radius:8px}100%{background:transparent}}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin-bottom:6px}
 .empty{color:#777;font-size:14px;padding:6px 0}
 .srow{display:flex;gap:6px;margin:5px 0}.srow input[type=text]{flex:1}.srow input[type=date]{width:130px}
@@ -63,7 +75,12 @@ textarea{min-height:70px;resize:vertical}
 <body>
 <main>
 <section id="cal">
-  <div class="nav"><button class="btn2" onclick="shiftWeek(-1)">‹</button><h1 id="wk" style="margin:0"></h1><button class="btn2" onclick="shiftWeek(1)">›</button></div>
+  <div class="nav"><button class="btn2" onclick="shiftWeek(-1)" aria-label="Poprzedni tydzień">‹</button><button id="wk" class="wkbtn" aria-expanded="false" aria-controls="jump" onclick="toggleJump()"></button><button class="btn2" onclick="shiftWeek(1)" aria-label="Następny tydzień">›</button></div>
+  <div id="jump" class="jump" hidden>
+    <div id="mgrid"></div>
+    <div class="jrow"><label for="jDate">Konkretny dzień</label><input id="jDate" type="date" min="2020-01-01" max="2100-12-31" onchange="if(this.value>='2020'&&this.value<='2100')jumpTo(this.value)"></div>
+    <button class="btn2 today-btn" onclick="jumpTo(today())">↩ Wróć do dziś</button>
+  </div>
   <div class="sync" id="sync"></div>
   <div class="legend" id="legend"></div>
   <div id="days"></div>
@@ -384,7 +401,11 @@ const col=s=>COLORS[cIdx(s)];
 
 function render(){
   const m=monday(week),t0=today();
-  wk.textContent=`${+m.slice(8)}.${m.slice(5,7)} – ${+addD(m,6).slice(8)}.${addD(m,6).slice(5,7)}`;
+  // rok pokazujemy, gdy tydzień nie jest w bieżącym roku (przy przełomie roku – oba lata)
+  const e=addD(m,6),Y=t0.slice(0,4),my=m.slice(0,4),ey=e.slice(0,4);
+  wk.textContent=my!==ey?`${+m.slice(8)}.${m.slice(5,7)}.${my} – ${+e.slice(8)}.${e.slice(5,7)}.${ey}`
+    :`${+m.slice(8)}.${m.slice(5,7)} – ${+e.slice(8)}.${e.slice(5,7)}${ey!==Y?' '+ey:''}`;
+  if(!jump.hidden&&!jump.contains(document.activeElement))renderJump();
   legend.innerHTML=[...new Set(S.tasks.map(t=>t.subject))].map(s=>`<span style="color:${col(s)[1]}">● ${esc(s)}</span>`).join('');
   const blk=(t,s,k)=>{const[bg,fg]=col(t.subject);return`<div class="blk${s.done?' done':''}" style="background:${bg};color:${fg}" data-t="${t.id}" data-k="${k}" onclick="toggle(${t.id},${k})">${s.done?'✓ ':''}${esc(s.text)} <small>· ${esc(t.subject)}</small></div>`};
   let h='';
@@ -414,6 +435,46 @@ function render(){
   renderAll();
   fCol.innerHTML=COLORS.map((c,i)=>`<span style="background:${c[0]}" class="${i===selCol?'sel':''}" onclick="selCol=${i};render()"></span>`).join('');
 }
+// ===== Szybki skok do miesiąca / dnia =====
+const MS=['Sty','Lut','Mar','Kwi','Maj','Cze','Lip','Sie','Wrz','Paź','Lis','Gru'];
+const mondayOf=d=>{const x=new Date(d+'T12:00');x.setDate(x.getDate()-(x.getDay()+6)%7);return iso(x)};
+function toggleJump(){
+  jump.hidden=!jump.hidden;wk.setAttribute('aria-expanded',!jump.hidden);
+  if(!jump.hidden){jDate.value='';renderJump();jump.querySelector('.cur')?.focus()}
+}
+function closeJump(){if(!jump.hidden){jump.hidden=true;wk.setAttribute('aria-expanded','false')}}
+const ym=d=>d.slice(0,7),addM=(k,n)=>{let y=+k.slice(0,4),m=+k.slice(5,7)-1+n;y+=Math.floor(m/12);m=(m%12+12)%12;return`${y}-${String(m+1).padStart(2,'0')}`};
+function renderJump(){
+  const t0=today();
+  // kropka = w tym miesiącu jest coś do zrobienia (niezrobiony krok, termin zadania lub pozycji z poczekalni)
+  const dls=S.tasks.flatMap(t=>t.steps.some(s=>!s.done)?[t.deadline,...t.steps.filter(s=>!s.done).map(s=>s.date)]:[])
+    .concat(S.wait.filter(w=>!w.done).map(w=>w.deadline)).filter(Boolean);
+  const has=new Set(dls.map(ym));
+  const cur=ym(addD(monday(week),3)); // miesiąc oglądanego tygodnia (wg czwartku)
+  // zakres: od najwcześniejszej zaległej rzeczy / oglądanego miesiąca (max rok wstecz)
+  // do najdalszego terminu / oglądanego miesiąca (min. 12 miesięcy, max 3 lata naprzód)
+  const now=ym(t0),lo=addM(now,-12),hi=addM(now,36);
+  let first=[now,cur,...dls.map(ym)].reduce((a,k)=>k<a?k:a),last=[addM(now,11),cur,...dls.map(ym)].reduce((a,k)=>k>a?k:a);
+  if(first<lo)first=lo;if(last>hi)last=hi;
+  let h='',grid='',lastY=null;
+  for(let k=first;k<=last;k=addM(k,1)){
+    const y=k.slice(0,4),mo=+k.slice(5,7)-1;
+    if(y!==lastY){if(grid)h+=`<div class="mgrid">${grid}</div>`;grid='';h+=`<div class="yr">${y}</div>`;lastY=y}
+    grid+=`<button type="button" class="${k===cur?'cur':''}${has.has(k)?' has':''}" onclick="jumpTo('${k}-01',true)" aria-label="${MON[mo]} ${y}${has.has(k)?' – są rzeczy do zrobienia':''}">${MS[mo]}</button>`;
+  }
+  mgrid.innerHTML=h+`<div class="mgrid">${grid}</div>`;
+}
+function jumpTo(d,month){
+  // miesiąc: tydzień, w którym jest większość jego początku (gdy 1. to pt–nd, bierzemy następny poniedziałek)
+  if(month){const w=(new Date(d+'T12:00').getDay()+6)%7;if(w>=4)d=addD(d,7-w)}
+  const n=Math.round(diff(monday(0),mondayOf(d))/7),dir=n-week;
+  closeJump();
+  if(dir)shiftWeek(dir);else render();
+  const el=days.querySelector(`[data-d="${d}"]`);if(el){el.classList.remove('hl');void el.offsetWidth;el.classList.add('hl')}
+  wk.focus({preventScroll:true});
+}
+document.addEventListener('pointerdown',e=>{if(!jump.hidden&&!e.target.closest('#jump,#wk'))closeJump()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!jump.hidden){closeJump();wk.focus()}});
 function shiftWeek(n){week+=n;render();days.style.transform='';days.classList.remove('inL','inR');void days.offsetWidth;days.classList.add(n>0?'inL':'inR')}
 // gest przesunięcia tygodnia
 let sw=null;
