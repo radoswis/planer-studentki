@@ -142,7 +142,7 @@ function norm(d){
 function load(k=LS){try{return norm(JSON.parse(localStorage.getItem(k)))}catch(e){return norm()}}
 const meta={get rev(){return+localStorage.getItem('planer_rev')||0},set rev(v){localStorage.setItem('planer_rev',v)},
   get dirty(){return localStorage.getItem('planer_dirty')==='1'},set dirty(v){localStorage.setItem('planer_dirty',v?'1':'0')}};
-let pushT=null,pushing=false,ver=0;
+let pushT=null,pushing=false,ver=0,pushFailed=false;
 function keepLocal(){try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){}}
 // "baza" = ostatnia wersja uzgodniona z chmurą; potrzebna, by przy konflikcie wiedzieć, co zmieniło to urządzenie
 function setBase(d){try{localStorage.setItem('planer_base',JSON.stringify(d))}catch(e){}}
@@ -183,7 +183,7 @@ function baseFor(l,r){
 }
 async function push(){
   clearTimeout(pushT);if(pushing){pushT=setTimeout(push,800);return}
-  pushing=true;const v=ver,ep=epoch,sent=JSON.stringify(S);
+  pushing=true;pushFailed=false;const v=ver,ep=epoch,sent=JSON.stringify(S);
   try{
     const r=await fetch('/api/data',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:S,base:meta.rev})});
     if(ep!==epoch)return; // w międzyczasie przywrócono kopię – ta odpowiedź jest już nieaktualna
@@ -198,13 +198,14 @@ async function push(){
       meta.rev=j.rev;setBase(remote);keepLocal();render();
       pushT=setTimeout(push,100);return;
     }
+    if(r.status===408||r.status===429)throw 0; // chwilowe – spróbujemy ponownie
     if(r.status>=400&&r.status<500){ // serwer odrzucił dane – ponawianie nic nie da, mówimy wprost, co się stało
       const j=await r.json().catch(()=>({}));
-      setSync(`⚠ Chmura nie przyjęła zapisu: ${j.error||r.status}. Dane są bezpieczne na tym urządzeniu.`,1);return;
+      pushFailed=true;setSync(`⚠ Chmura nie przyjęła zapisu: ${j.error||r.status}. Dane są bezpieczne na tym urządzeniu.`,1);return;
     }
     if(!r.ok)throw 0;const j=await r.json();meta.rev=j.rev;setBase(JSON.parse(sent));
     if(v===ver){meta.dirty=false;setSync('☁ Zapisano w chmurze')}else pushT=setTimeout(push,800);
-  }catch(e){setSync('⚠ Brak połączenia – zapisano na tym urządzeniu, wyślę do chmury później',1)}
+  }catch(e){pushFailed=true;setSync('⚠ Brak połączenia – zapisano na tym urządzeniu, wyślę do chmury później',1);clearTimeout(pushT);pushT=setTimeout(push,30000)}
   finally{pushing=false}
 }
 async function pull(){
@@ -370,9 +371,9 @@ async function replanAll(){
   const why=[fb&&`${fb} zad. prostszym algorytmem – AI nie odpowiada`,big&&`${big} zad. ma ponad 40 kroków, więc ułożono je prostszym algorytmem`].filter(Boolean);
   toast(why.length?`Przeplanowano (${why.join('; ')}).`:'Przeplanowano z AI.','↶ Cofnij',()=>{
     if(locked())return toast(BUSY_MSG);
-    // cofamy tylko daty przeplanowanych zadań; inne zmiany (nowe zadania, odhaczenia) zostają
-    S.tasks.forEach(t=>{if(!before.has(t.id))return;const old=JSON.parse(before.get(t.id));
-      t.steps=old.map(o=>({...o,done:o.done||t.steps.some(c=>c.text===o.text&&c.done)}))});
+    // cofamy tylko daty kroków przeplanowanych zadań; nazwy, odhaczenia i inne zmiany zostają
+    S.tasks.forEach(t=>{if(!before.has(t.id))return;const old=JSON.parse(before.get(t.id)),used=new Set();
+      t.steps=t.steps.map(c=>{const k=old.findIndex((o,i)=>!used.has(i)&&o.text===c.text);if(k<0)return c;used.add(k);return{...c,date:old[k].date}})});
     save();render();toast('Przywrócono poprzedni plan.')},15000);
 }
 function toggle(id,i){if(dragged)return;const t=S.tasks.find(t=>t.id===id);if(!t||!t.steps[i])return;t.steps[i].done=!t.steps[i].done;save();render()}
@@ -526,7 +527,10 @@ async function loadBackups(){
 async function restore(k){
   if(locked())return toast(BUSY_MSG);
   // niewysłane zmiany z tego urządzenia najpierw do chmury, żeby trafiły do kopii sprzed przywrócenia
-  for(let i=0;i<3&&meta.dirty;i++)await push();
+  for(const end=Date.now()+8000;meta.dirty&&Date.now()<end;){
+    if(pushing)await new Promise(r=>setTimeout(r,200)); // zapis już trwa – czekamy na jego wynik
+    else{await push();if(pushFailed)break} // nie udało się (offline/odrzucone)
+  }
   if(meta.dirty&&!confirm('Nie udało się wysłać ostatnich zmian z tego urządzenia – nie trafią do kopii. Przywrócić mimo to?'))return;
   const r=await fetch('/api/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})});
   if(!r.ok)throw 0;const j=await r.json();
@@ -541,7 +545,7 @@ bkList.addEventListener('click',async e=>{
   if(!confirm(`Przywrócić dane z kopii: ${bkName(k)}?\nObecny stan zostanie zapisany jako osobna kopia, więc zawsze można do niego wrócić.`))return;
   try{
     const undo=await restore(k);if(undo===undefined)return;
-    toast('Przywrócono kopię.',undo?'↶ Cofnij':null,async()=>{try{await restore(undo);toast('Cofnięto przywrócenie.')}catch(e){toast('Nie udało się cofnąć – użyj kopii „stan sprzed przywrócenia”.')}},15000);
+    toast('Przywrócono kopię.',undo?'↶ Cofnij':null,async()=>{try{if(await restore(undo)===undefined)return;toast('Cofnięto przywrócenie.')}catch(e){toast('Nie udało się cofnąć – użyj kopii „stan sprzed przywrócenia”.')}},15000);
   }catch(e){toast('Nie udało się przywrócić kopii (brak połączenia?).')}
 });
 function tab(x){if(x!=='list'&&fromWait&&!editId&&!locked())cancelEdit();cal.hidden=x!=='cal';list.hidden=x!=='list';all.hidden=x!=='all';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list');tAll.classList.toggle('on',x==='all')}
