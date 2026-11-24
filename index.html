@@ -62,7 +62,13 @@ textarea{min-height:70px;resize:vertical}
 .combo{position:relative}.combo input{padding-right:42px}.cbtn{position:absolute;right:4px;top:4px;bottom:4px;width:36px;border:0;background:none;font-size:16px;color:#777}
 .dd{position:absolute;left:0;right:0;top:100%;margin-top:4px;background:#fff;border:1px solid #ddd9cf;border-radius:10px;max-height:240px;overflow-y:auto;z-index:10;box-shadow:0 6px 18px rgba(0,0,0,.12)}
 .dd div{padding:11px 12px;display:flex;align-items:center;gap:10px;border-top:1px solid #f0ede5}.dd div:first-child{border-top:0}.dd i{width:14px;height:14px;border-radius:50%;flex-shrink:0}
-.subj{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #e4e1d8}.subj i{width:26px;height:26px;border-radius:50%;cursor:pointer;flex-shrink:0}.subj span{flex:1}
+.subj{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #e4e1d8}.subj i{width:26px;height:26px;border-radius:50%;cursor:pointer;flex-shrink:0}.subj span{flex:1;cursor:pointer}
+.kb{display:inline-block;font-size:11px;font-weight:600;line-height:1;padding:3px 6px;border-radius:6px;border:1px solid currentColor;opacity:.85;vertical-align:1px;white-space:nowrap}
+.sedit{border-top:1px solid #e4e1d8;padding:10px 0 12px}.sedit label{margin-top:8px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chips button{padding:8px 11px;border:1px solid #ddd9cf;border-radius:18px;background:#fff;font-size:14px;color:#2c2c2a}
+.chips button.on{background:#2c2c2a;border-color:#2c2c2a;color:#fff}
+.sedit .colors span{width:28px;height:28px}
+.srow2{display:flex;gap:8px;margin-top:12px}.srow2 .btn2{flex:1;padding:10px}.srow2 .btn2.pri{background:#2c2c2a;color:#fff;border-color:#2c2c2a}
 .hint{font-size:12px;color:#6f6f6a;margin-top:8px}
 .sync{font-size:12px;color:#6f6f6a;text-align:center;margin:-2px 0 6px}.sync.err{color:#a32d2d}
 .late{background:#fbe9e9;border-radius:10px;padding:8px 10px;margin-bottom:6px}.late b{font-size:13px;color:#a32d2d;display:block;margin-bottom:5px}
@@ -101,8 +107,9 @@ textarea{min-height:70px;resize:vertical}
   <div id="tasks"></div>
   <h1 style="margin-top:22px">Moje przedmioty</h1>
   <div id="subjList"></div>
-  <div style="display:flex;gap:8px;margin-top:8px"><input id="nSub" placeholder="Nowy przedmiot"><button class="btn2" onclick="addSubj()">+ Dodaj</button></div>
-  <div class="hint">Stuknij kółko, aby zmienić kolor przedmiotu.</div>
+  <div style="display:flex;gap:8px;margin-top:8px"><input id="nSub" placeholder="Nowy przedmiot" maxlength="180"><button class="btn2" onclick="addSubj()">+ Dodaj</button></div>
+  <div class="chips" id="nKind" style="margin-top:8px"></div>
+  <div class="hint">Stuknij przedmiot, aby zmienić nazwę, typ zajęć lub kolor.</div>
   
 </section>
 <section id="all" hidden>
@@ -149,12 +156,15 @@ function norm(d){
   if(d.colors&&typeof d.colors==='object')for(const[k,v]of Object.entries(d.colors)){
     if(k==='__proto__')continue;const c=Number(v);colors[k.slice(0,200)]=Number.isInteger(c)&&c>=0&&c<COLORS.length?c:0;
   }
-  return{
+  const out={
     tasks:objs(d.tasks).map(t=>({id:id(t.id),title:str(t.title,500),subject:str(t.subject,200),desc:str(t.desc,4000),deadline:date(t.deadline),
       steps:objs(t.steps).map(s=>({text:str(s.text,500),date:date(s.date),done:s.done===true}))})),
     colors,
     wait:objs(d.wait).map(w=>({id:id(w.id),title:str(w.title,500),subject:str(w.subject,200),deadline:date(w.deadline),done:w.done===true}))
   };
+  // każdy używany przedmiot musi być na liście (np. po zmianie nazwy na jednym urządzeniu i edycji na drugim)
+  for(const x of[...out.tasks,...out.wait])if(x.subject&&x.subject!=='__proto__'&&!Object.hasOwn(colors,x.subject))colors[x.subject]=0;
+  return out;
 }
 function load(k=LS){try{return norm(JSON.parse(localStorage.getItem(k)))}catch(e){return norm()}}
 const meta={get rev(){return+localStorage.getItem('planer_rev')||0},set rev(v){localStorage.setItem('planer_rev',v)},
@@ -406,8 +416,8 @@ function render(){
   wk.textContent=my!==ey?`${+m.slice(8)}.${m.slice(5,7)}.${my} – ${+e.slice(8)}.${e.slice(5,7)}.${ey}`
     :`${+m.slice(8)}.${m.slice(5,7)} – ${+e.slice(8)}.${e.slice(5,7)}${ey!==Y?' '+ey:''}`;
   if(!jump.hidden&&!jump.contains(document.activeElement))renderJump();
-  legend.innerHTML=[...new Set(S.tasks.map(t=>t.subject))].map(s=>`<span style="color:${col(s)[1]}">● ${esc(s)}</span>`).join('');
-  const blk=(t,s,k)=>{const[bg,fg]=col(t.subject);return`<div class="blk${s.done?' done':''}" style="background:${bg};color:${fg}" data-t="${t.id}" data-k="${k}" onclick="toggle(${t.id},${k})">${s.done?'✓ ':''}${esc(s.text)} <small>· ${esc(t.subject)}</small></div>`};
+  legend.innerHTML=[...new Set(S.tasks.map(t=>t.subject))].map(s=>`<span style="color:${col(s)[1]}">● ${subjHTML(s)}</span>`).join('');
+  const blk=(t,s,k)=>{const[bg,fg]=col(t.subject);return`<div class="blk${s.done?' done':''}" style="background:${bg};color:${fg}" data-t="${t.id}" data-k="${k}" onclick="toggle(${t.id},${k})">${s.done?'✓ ':''}${esc(s.text)} <small>· ${subjHTML(t.subject)}</small></div>`};
   let h='';
   if(week===0){
     const late=[];S.tasks.forEach(t=>t.steps.forEach((s,k)=>{if(!s.done&&s.date<t0)late.push(blk(t,s,k))}));
@@ -419,7 +429,7 @@ function render(){
     S.tasks.forEach(t=>{
       t.steps.forEach((s,k)=>{if(s.date===d)c+=blk(t,s,k)});
       if(t.deadline===d){
-        const label = esc(t.title && t.title !== t.subject ? `${t.title} (${t.subject})` : t.subject);
+        const label = t.title && t.title !== t.subject ? `${esc(t.title)} (${subjHTML(t.subject)})` : subjHTML(t.subject);
         c+=`<div class="dead">⚑ Deadline: ${label}</div>`;
       }
     });
@@ -429,7 +439,7 @@ function render(){
   renderSubj();
   tasks.innerHTML=S.tasks.length?S.tasks.slice().sort((a,b)=>a.deadline<b.deadline?-1:1).map(t=>{
     const[bg,fg]=col(t.subject),d=t.steps.filter(s=>s.done).length;
-    const header=t.title&&t.title!==t.subject?`<b>${esc(t.title)}</b> <small>· ${esc(t.subject)}</small>`:`<b>${esc(t.subject)}</b>`;
+    const header=t.title&&t.title!==t.subject?`<b>${esc(t.title)}</b> <small>· ${subjHTML(t.subject)}</small>`:`<b>${subjHTML(t.subject)}</b>`;
     return`<div class="card" style="background:${bg};color:${fg}"><div>${header}<br><small>${d}/${t.steps.length} kroków · do ${t.deadline.slice(8)}.${t.deadline.slice(5,7)}</small></div><span style="white-space:nowrap"><button class="x" style="color:${fg}" onclick="edit(${t.id})">✎</button><button class="x" style="color:${fg}" onclick="del(${t.id})">✕</button></span></div>`
   }).join(''):'<div class="empty">Dodaj pierwsze zadanie powyżej.</div>';
   renderAll();
@@ -562,7 +572,7 @@ function renderAll(){
     const o=it.t||it.w,[bg,fg]=col(o.subject);
     const grp=it.dl?MON[+it.dl.slice(5,7)-1]+' '+it.dl.slice(0,4):'Bez daty';
     if(grp!==last){h+=`<h2 style="font-size:15px;margin:16px 0 4px;color:#777">${grp}</h2>`;last=grp}
-    const name=o.title&&o.title!==o.subject?`<b>${esc(o.title)}</b>${o.subject?` <small>· ${esc(o.subject)}</small>`:''}`:`<b>${esc(o.subject||o.title||'(bez nazwy)')}</b>`;
+    const name=o.title&&o.title!==o.subject?`<b>${esc(o.title)}</b>${o.subject?` <small>· ${subjHTML(o.subject)}</small>`:''}`:`<b>${o.subject?subjHTML(o.subject):esc(o.title||'(bez nazwy)')}</b>`;
     const date=it.dl?`${it.dl.slice(8)}.${it.dl.slice(5,7)}`:'';
     const info=it.t?`📅 w kalendarzu · ${it.t.steps.filter(s=>s.done).length}/${it.t.steps.length} kroków`:'⏳ poczekalnia';
     const st=it.done?'✓ zrobione':(it.dl&&it.dl<t0?'po terminie':'');
@@ -610,21 +620,97 @@ bkList.addEventListener('click',async e=>{
   }catch(e){toast('Nie udało się przywrócić kopii (brak połączenia?).')}
 });
 function tab(x){if(x!=='list'&&fromWait&&!editId&&!locked())cancelEdit();cal.hidden=x!=='cal';list.hidden=x!=='list';all.hidden=x!=='all';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list');tAll.classList.toggle('on',x==='all')}
-function addSubj(){const n=nSub.value.trim();if(!n)return;if(!Object.hasOwn(S.colors,n)){const used=Object.values(S.colors);let c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[n]=c<0?0:c;save()}nSub.value='';render()}
+// ===== Przedmioty: nazwa + typ zajęć (np. "Osobowość · Wykład") =====
+// Typ jest częścią nazwy-klucza, więc "Osobowość · Wykład" i "Osobowość · Konwersatorium" to dwa osobne przedmioty.
+const KINDS=['Wykład','Ćwiczenia','Laboratorium','Konwersatorium','Seminarium'];
+const KABBR={'Wykład':'wykład','Ćwiczenia':'ćw.','Laboratorium':'lab.','Konwersatorium':'konw.','Seminarium':'sem.'};
+const KRE=new RegExp(`^(.*) · (${KINDS.join('|')})$`);
+const subjParts=k=>{const m=String(k).match(KRE);return m?{name:m[1],kind:m[2]}:{name:String(k),kind:''}};
+const subjKey=(name,kind)=>kind?`${name} · ${kind}`:name;
+// nazwa przedmiotu + plakietka typu (do HTML)
+const subjHTML=k=>{const{name,kind}=subjParts(k);return`${esc(name)}${kind?` <span class="kb">${KABBR[kind]}</span>`:''}`};
+// typ zapisany dotąd w nazwie (np. "Osobowość wykład") – podpowiedź przy edycji
+// typ zapisany dotąd w nazwie – rozpoznajemy go tylko na końcu ("Osobowość wykład")
+// albo na początku przed nazwą z wielkiej litery ("Seminarium Psychologia…") – podpowiedź przy edycji
+const KW=[['wyk(ł|l)ad(y|u)?','Wykład'],['(ć|c)wiczeni(a|e)|(ć|c)w\\.','Ćwiczenia'],['laboratori(um|a)|lab\\.','Laboratorium'],['konwersatori(um|a)|konw\\.','Konwersatorium'],['seminari(um|a)|sem\\.','Seminarium']];
+function guessKind(k){
+  const p=subjParts(k);if(p.kind)return p;
+  for(const[w,kind]of KW){
+    const end=new RegExp(`[\\s\\-–(]+(?:${w})\\)?$`,'i'),start=new RegExp(`^(?:${w})[\\s\\-–:]+`,'i');
+    let name=end.test(p.name)?p.name.replace(end,'').trim():'';
+    if(!name&&start.test(p.name)){const rest=p.name.replace(start,'');if(rest&&rest[0]!==rest[0].toLowerCase())name=rest.trim()}
+    if(name)return{name,kind};
+  }
+  return p;
+}
+function chips(sel){return['',...KINDS].map(k=>`<button type="button" class="${k===sel?'on':''}" data-kind="${k}">${k||'Brak'}</button>`).join('')}
+let nKindSel='',subjEdit=null;
+function addSubj(){
+  const p=subjParts(nSub.value.trim()),n=p.name.slice(0,180);if(!n)return;const key=subjKey(n,nKindSel||p.kind);
+  if(!Object.hasOwn(S.colors,key)){const used=Object.values(S.colors);let c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[key]=c<0?0:c;save()}
+  nSub.value='';nKindSel='';render();
+}
+nKind.addEventListener('click',e=>{const b=e.target.closest('[data-kind]');if(!b)return;nKindSel=b.dataset.kind;nKind.innerHTML=chips(nKindSel)});
+// edycja przedmiotu: nazwa, typ, kolor
+function editSubj(k){
+  if(locked())return toast(BUSY_MSG);
+  if(subjEdit&&subjEdit.key!==k&&subjDirty()&&!confirm('Odrzucić niezapisane zmiany przedmiotu?'))return;
+  // startujemy od faktycznej nazwy; rozpoznany typ (np. "Osobowość wykład") jest tylko podpowiedzią
+  const p=subjParts(k),g=guessKind(k);
+  subjEdit={key:k,name:p.name,kind:p.kind,col:cIdx(k),hint:g.kind&&!p.kind?g:null};subjEdit.init={...subjEdit};renderSubj();
+  subjList.querySelector('.sedit input')?.focus();
+}
+const subjDirty=()=>{const e=subjEdit;return!!e&&(e.name!==e.init.name||e.kind!==e.init.kind||e.col!==e.init.col)};
+function useHint(){const e=subjEdit;if(!e?.hint)return;e.name=e.hint.name;e.kind=e.hint.kind;e.hint=null;renderSubj()}
+function saveSubj(){
+  const e=subjEdit;if(!e)return;if(locked())return toast(BUSY_MSG);
+  const p=subjParts(subjList.querySelector('.sedit input').value.trim()),name=p.name.slice(0,180);
+  if(!name)return toast('Wpisz nazwę przedmiotu.');
+  const old=e.key,key=subjKey(name,e.kind||p.kind);
+  if(key!==old&&Object.hasOwn(S.colors,key)&&!confirm(`Przedmiot „${key}” już istnieje. Połączyć – zadania z „${old}” przejdą do niego?`))return;
+  if(key!==old){
+    // tytuł równy staremu przedmiotowi (zadanie dodane bez nazwy) też zmieniamy
+    for(const x of[...S.tasks,...S.wait])if(x.subject===old){x.subject=key;if(x.title===old)x.title=key}
+    delete S.colors[old];
+    if(fSub.value===old)fSub.value=key;if(wSub.value===old)wSub.value=key;
+  }
+  S.colors[key]=e.col;subjEdit=null;save();render();
+  toast(key!==old?`Zapisano: ${key}`:'Zapisano zmiany.');
+}
 function delSubj(n){
   const k=S.tasks.filter(t=>t.subject===n).length+S.wait.filter(w=>w.subject===n).length;
   if(!confirm(k?`Przedmiot „${n}” ma ${k} zadań. Usunąć przedmiot razem z zadaniami?`:`Usunąć przedmiot „${n}”?`))return;
+  if(subjEdit?.key===n)subjEdit=null;
   S.tasks=S.tasks.filter(t=>t.subject!==n);S.wait=S.wait.filter(w=>w.subject!==n);delete S.colors[n];save();render();
 }
-function cycleCol(n){S.colors[n]=(cIdx(n)+1)%COLORS.length;save();render()}
+function cancelSubj(){subjEdit=null;renderSubj()}
 function renderSubj(){
+  nKind.innerHTML=chips(nKindSel);
+  const typing=subjEdit&&document.activeElement?.closest?.('.sedit');
   const L=Object.keys(S.colors).sort((a,b)=>a.localeCompare(b,'pl'));
-  subjList.innerHTML=L.length?L.map((n,i)=>{const[bg,fg]=COLORS[S.colors[n]];return`<div class="subj"><i style="background:${bg};border:2px solid ${fg}" onclick="cycleCol(SL[${i}])"></i><span>${esc(n)}</span><button class="x" onclick="delSubj(SL[${i}])">✕</button></div>`}).join(''):'<div class="empty">Brak przedmiotów – dodaj pierwszy.</div>';
+  if(subjEdit&&!L.includes(subjEdit.key))subjEdit=null; // przedmiot zniknął (np. usunięty na innym urządzeniu)
+  subjList.innerHTML=L.length?L.map((n,i)=>{
+    if(subjEdit&&subjEdit.key===n){const e=subjEdit;return`<div class="sedit">
+      <label>Nazwa</label><input value="${esc(e.name)}" maxlength="180" oninput="subjEdit.name=this.value" onkeydown="if(event.key==='Enter')saveSubj()">
+      ${e.hint?`<button type="button" class="btn2" style="margin-top:8px;width:100%;text-align:left" onclick="useHint()">💡 Typ jest w nazwie – zmienić na „${esc(e.hint.name)}” + ${esc(e.hint.kind)}?</button>`:''}
+      <label>Typ zajęć</label><div class="chips" id="eKind">${chips(e.kind)}</div>
+      <label>Kolor</label><div class="colors" id="eCol">${COLORS.map((c,j)=>`<span style="background:${c[0]};border-color:${j===e.col?c[1]:'transparent'}" data-c="${j}"></span>`).join('')}</div>
+      <div class="srow2"><button class="btn2" onclick="cancelSubj()">Anuluj</button><button class="btn2 pri" onclick="saveSubj()">💾 Zapisz</button></div></div>`}
+    const[bg,fg]=COLORS[S.colors[n]];
+    return`<div class="subj"><i style="background:${bg};border:2px solid ${fg}" onclick="editSubj(SL[${i}])"></i><span onclick="editSubj(SL[${i}])">${subjHTML(n)}</span><button class="x" aria-label="Edytuj" onclick="editSubj(SL[${i}])">✎</button><button class="x" aria-label="Usuń" onclick="delSubj(SL[${i}])">✕</button></div>`;
+  }).join(''):'<div class="empty">Brak przedmiotów – dodaj pierwszy.</div>';
   window.SL=L;
+  if(typing){const i=subjList.querySelector('.sedit input');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}}
 }
+subjList.addEventListener('click',e=>{
+  if(!subjEdit)return;
+  const kb=e.target.closest('#eKind [data-kind]'),cb=e.target.closest('#eCol [data-c]');
+  if(!kb&&!cb)return;
+  if(kb)subjEdit.kind=kb.dataset.kind;if(cb)subjEdit.col=+cb.dataset.c;renderSubj();
+});
 function showSubs(all){
   const q=all?'':fSub.value.trim().toLowerCase(),L=Object.keys(S.colors).filter(s=>s.toLowerCase().includes(q)).sort((a,b)=>a.localeCompare(b,'pl'));
-  subs.innerHTML=L.map(s=>`<div data-s="${esc(s)}"><i style="background:${COLORS[S.colors[s]][0]};border:2px solid ${COLORS[S.colors[s]][1]}"></i>${esc(s)}</div>`).join('');
+  subs.innerHTML=L.map(s=>`<div data-s="${esc(s)}"><i style="background:${COLORS[S.colors[s]][0]};border:2px solid ${COLORS[S.colors[s]][1]}"></i><span>${subjHTML(s)}</span></div>`).join('');
   subs.hidden=!L.length;
 }
 function toggleSubs(){if(subs.hidden){showSubs(true);fSub.focus()}else subs.hidden=true}
