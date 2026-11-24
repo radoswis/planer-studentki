@@ -99,7 +99,7 @@ textarea{min-height:70px;resize:vertical}
   <h1 style="margin-top:22px">Wszystko</h1>
   <div id="allList"></div>
   <details id="bk" style="margin-top:26px"><summary style="font-size:14px;color:#6f6f6a;padding:8px 0;cursor:pointer">🛟 Kopie zapasowe</summary>
-    <div class="hint" style="margin-top:0">Aplikacja codziennie zapisuje kopię danych (trzymana 30 dni). Możesz wrócić do wybranego dnia – obecny stan da się cofnąć.</div>
+    <div class="hint" style="margin-top:0">Aplikacja codziennie zapisuje kopię danych (trzymana 30 dni). Przed każdym przywróceniem obecny stan też trafia do kopii, więc zawsze można do niego wrócić.</div>
     <div id="bkList"></div>
   </details>
 </section>
@@ -109,7 +109,13 @@ textarea{min-height:70px;resize:vertical}
 const AI_URL = '/api/plan';
 const COLORS=[['#d9ede3','#0f5a44'],['#dce9f7','#0c447c'],['#f6dde6','#72243e'],['#f8e8cc','#633806'],['#e6e3f8','#3c3489'],['#f3e0d8','#712b13'],['#d6eef2','#0b5563'],['#e9f2d2','#3b5a0e'],['#fbe0d3','#8a2e0a'],['#f0dcf2','#6a1f72'],['#fff2c2','#6b5300'],['#e4e4e1','#3a3a37'],['#d9e2fb','#1f3a8a'],['#fbd9d9','#8a1c1c'],['#d5f2e0','#14532d'],['#f7e3f0','#831843']];
 const DAYS=['Nd','Pon','Wt','Śr','Czw','Pt','Sob'];
-let S, week=0, selCol=0, lock=false;
+let S, week=0, selCol=0;
+// Trwające planowanie z AI: synchronizacja nie podmienia wtedy danych. Licznik, bo operacji może być kilka naraz.
+let busy=0,pendingPull=false,epoch=0;
+const locked=()=>busy>0;
+function lockOn(){busy++}
+function lockOff(){busy=Math.max(0,busy-1);if(!busy&&pendingPull){pendingPull=false;pull()}}
+const BUSY_MSG='Poczekaj chwilę – trwa planowanie z AI.';
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 // ===== Dane: chmura (Cloudflare KV) + kopia na urządzeniu (offline) =====
@@ -151,9 +157,14 @@ function merge3(b,l,r){
       const lx=L.get(k),mine=lx?JSON.stringify(lx)!==B.get(k):B.has(k);
       let x=mine?lx:R.get(k);
       const rx=R.get(k);
-      // oba urządzenia zmieniły to samo zadanie: zachowaj "zrobione" z obu stron
-      if(mine&&lx&&rx&&Array.isArray(lx.steps)&&JSON.stringify(rx)!==B.get(k))
-        x={...lx,steps:lx.steps.map(s=>({...s,done:s.done||rx.steps.some(o=>o.text===s.text&&o.done)}))};
+      // oba urządzenia zmieniły to samo zadanie: dla każdego kroku "zrobione" bierzemy z tej strony, która je zmieniła
+      if(mine&&lx&&rx&&Array.isArray(lx.steps)&&JSON.stringify(rx)!==B.get(k)){
+        const bx=B.has(k)?JSON.parse(B.get(k)):null;
+        x={...lx,steps:lx.steps.map(s=>{
+          const bs=bx?.steps.find(o=>o.text===s.text),rs=rx.steps.find(o=>o.text===s.text);
+          return{...s,done:!bs||s.done!==bs.done||!rs?s.done:rs.done};
+        })};
+      }
       if(x)out.push(x);
     }
     return out;
@@ -162,17 +173,34 @@ function merge3(b,l,r){
   return norm({tasks:part(b.tasks,l.tasks,r.tasks,t=>t.id),wait:part(b.wait,l.wait,r.wait,w=>w.id),
     colors:Object.fromEntries(part(ent(b.colors),ent(l.colors),ent(r.colors),e=>e[0]))});
 }
+// Baza do łączenia. Gdy jej brak (np. pierwsza synchronizacja po aktualizacji): dla pozycji obecnych w obu wersjach
+// przyjmujemy wersję z chmury, a lokalne pozycje, których w chmurze nie ma, dokładamy.
+function baseFor(l,r){
+  if(localStorage.getItem('planer_base')!=null)return load('planer_base');
+  const rt=new Set(r.tasks.map(t=>t.id)),rw=new Set(r.wait.map(w=>w.id));
+  return{tasks:l.tasks.filter(t=>rt.has(t.id)),wait:l.wait.filter(w=>rw.has(w.id)),
+    colors:Object.fromEntries(Object.entries(l.colors).filter(([k])=>Object.hasOwn(r.colors,k)))};
+}
 async function push(){
   clearTimeout(pushT);if(pushing){pushT=setTimeout(push,800);return}
-  pushing=true;const v=ver,sent=JSON.stringify(S);
+  pushing=true;const v=ver,ep=epoch,sent=JSON.stringify(S);
   try{
     const r=await fetch('/api/data',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:S,base:meta.rev})});
+    if(ep!==epoch)return; // w międzyczasie przywrócono kopię – ta odpowiedź jest już nieaktualna
     if(r.status===409){
-      // inne urządzenie zapisało coś w międzyczasie – łączymy (chyba że trwa edycja/przeplanowanie, wtedy później)
-      const j=await r.json();
-      if(lock||drag){pushT=setTimeout(push,3000);return}
-      S=merge3(load('planer_base'),S,norm(j.data));meta.rev=j.rev;setBase(norm(j.data));keepLocal();render();
+      // inne urządzenie zapisało coś w międzyczasie – łączymy (chyba że trwa przeciąganie/planowanie, wtedy później)
+      const j=await r.json(),remote=norm(j.data);
+      if(locked()||drag){pushT=setTimeout(push,3000);return}
+      const noBase=localStorage.getItem('planer_base')==null,mine=S;
+      S=merge3(baseFor(S,remote),S,remote);
+      // bez bazy wygrywa wersja z chmury – ale kroki odhaczone na tym urządzeniu zostają odhaczone
+      if(noBase)S.tasks.forEach(t=>{const lt=mine.tasks.find(x=>x.id===t.id);if(lt)t.steps.forEach(s=>{if(lt.steps.some(o=>o.text===s.text&&o.done))s.done=true})});
+      meta.rev=j.rev;setBase(remote);keepLocal();render();
       pushT=setTimeout(push,100);return;
+    }
+    if(r.status>=400&&r.status<500){ // serwer odrzucił dane – ponawianie nic nie da, mówimy wprost, co się stało
+      const j=await r.json().catch(()=>({}));
+      setSync(`⚠ Chmura nie przyjęła zapisu: ${j.error||r.status}. Dane są bezpieczne na tym urządzeniu.`,1);return;
     }
     if(!r.ok)throw 0;const j=await r.json();meta.rev=j.rev;setBase(JSON.parse(sent));
     if(v===ver){meta.dirty=false;setSync('☁ Zapisano w chmurze')}else pushT=setTimeout(push,800);
@@ -185,7 +213,8 @@ async function pull(){
     const r=await fetch('/api/data',{cache:'no-store'});if(!r.ok)throw 0;const j=await r.json();
     if(!j.data){if(S.tasks.length||S.wait.length||Object.keys(S.colors).length)return save();setSync('☁ Połączono z chmurą');return}
     // tylko nowsza wersja z chmury, nigdy w trakcie przeciągania/planowania (otwarte formularze same sprawdzają, czy pozycja jeszcze istnieje)
-    if(j.rev>meta.rev&&!meta.dirty&&!drag&&!lock){S=norm(j.data);meta.rev=j.rev;setBase(S);keepLocal();render()}
+    if(j.rev>meta.rev&&(drag||locked())){pendingPull=true;setSync('Jest nowsza wersja w chmurze – wczytam ją za chwilę');return}
+    if(j.rev>meta.rev&&!meta.dirty){S=norm(j.data);meta.rev=j.rev;setBase(S);keepLocal();render()}
     else if(j.rev===meta.rev&&!meta.dirty)setBase(norm(j.data));
     setSync('☁ Zapisano w chmurze');
   }catch(e){setSync('⚠ Brak połączenia – pokazuję dane z tego urządzenia',1)}
@@ -269,13 +298,14 @@ const FB_MSG='AI teraz nie odpowiada – plan ułożono prostszym algorytmem. Sp
 
 async function addTask(){
   if(editId)return saveEdit();
+  if(locked())return alertMsg(BUSY_MSG);
   const title=fTitle.value.trim(),sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
   if(!sub||!desc||!dl)return alertMsg('Uzupełnij przynajmniej przedmiot, opis i deadline.');
   if(dl<=today())return alertMsg('Deadline musi być w przyszłości.');
   const t={id:Date.now(),title:title||sub,subject:sub,desc,deadline:dl},col=selCol,wid=fromWait;
-  // lock: w trakcie planowania synchronizacja nie podmienia danych (inaczej kolor/zadanie mogłyby przepaść)
-  lock=true;fBtn.textContent='Planuję z AI…';fBtn.disabled=true;
-  try{t.steps=await plan(t)}finally{lock=false;fBtn.disabled=false;fBtn.textContent=editId?'💾 Zapisz zmiany':'+ Dodaj i rozplanuj'}
+  // blokada: w trakcie planowania synchronizacja nie podmienia danych (inaczej kolor/zadanie mogłyby przepaść)
+  lockOn();fBtn.textContent='Planuję z AI…';fBtn.disabled=true;
+  try{t.steps=await plan(t)}finally{lockOff();fBtn.disabled=false;fBtn.textContent=editId?'💾 Zapisz zmiany':'+ Dodaj i rozplanuj'}
   S.colors[sub]=col;
   if(wid){S.wait=S.wait.filter(w=>w.id!==wid);if(wEditId===wid)wReset()}
   S.tasks.push(t);save();
@@ -298,6 +328,7 @@ function cancelEdit(){editId=null;fromWait=null;fTitle.value='';fDesc.value='';f
 async function saveEdit(){
   const t=S.tasks.find(t=>t.id===editId),sub=fSub.value.trim(),desc=fDesc.value.trim(),dl=fDl.value;
   if(!t){cancelEdit();return alertMsg('To zadanie zostało usunięte (np. na innym urządzeniu).')}
+  if(locked())return alertMsg(BUSY_MSG);
   if(!sub||!desc||!dl)return alertMsg('Uzupełnij przynajmniej przedmiot, opis i deadline.');
   const rows=[...stepList.children].map((r,i)=>{const[a,b]=r.querySelectorAll('input');return{text:a.value.trim(),date:b.value||today(),done:false,_i:i}}).filter(s=>s.text);
   // zachowaj status "zrobione" dla kroków o niezmienionym tekście
@@ -305,7 +336,9 @@ async function saveEdit(){
   const descChanged=desc!==t.desc;
   Object.assign(t,{title:fTitle.value.trim()||sub,subject:sub,desc,deadline:dl});
   S.colors[sub]=selCol;
-  if(descChanged&&confirm('Opis się zmienił. Rozplanować kroki od nowa?')){fBtn.textContent='Planuję z AI…';fBtn.disabled=lock=true;const done=t.steps.filter(s=>s.done);let fresh;try{fresh=await plan(t)}finally{fBtn.disabled=lock=false}
+  if(descChanged&&confirm('Opis się zmienił. Rozplanować kroki od nowa?')){fBtn.textContent='Planuję z AI…';fBtn.disabled=true;lockOn();let fresh;try{fresh=await plan(t)}finally{fBtn.disabled=false;lockOff()}
+    // "zrobione" czytamy dopiero po odpowiedzi AI – kroki odhaczone w międzyczasie nie przepadną
+    const done=t.steps.filter(s=>s.done);
     t.steps=done.concat(fresh.filter(f=>!done.some(d=>d.text===f.text)));if(fellBack)toast(FB_MSG,null,null,8000)}
   else t.steps=rows;
   save();cancelEdit();render();tab('cal');
@@ -316,20 +349,31 @@ function alertMsg(m){let e=document.getElementById('err');if(!e){e=document.crea
 async function replanAll(){
   const t0=today(),todo=S.tasks.filter(t=>t.deadline>t0&&t.steps.some(s=>!s.done));
   if(!todo.length)return toast('Nie ma nic do przeplanowania.');
-  const snap=JSON.stringify(S);let fb=0,big=0;lock=true;rBtn.disabled=true;
-  for(const [i,t] of todo.entries()){
-    rBtn.textContent=`Przeplanowuję z AI… ${i+1}/${todo.length}`;
-    const done=t.steps.filter(s=>s.done),open=t.steps.filter(s=>!s.done);
-    // AI dostaje max 40 kroków; zawsze zachowujemy oryginalne nazwy, a liczba kroków musi się zgadzać
-    if(open.length>40)big++;
-    let ns=open.length<=40?await aiPlan(t,open.map(s=>s.text)):null;
-    if(ns&&ns.length===open.length)ns=ns.map((s,i)=>({text:open[i].text,date:DT.test(s.date)?s.date:open[i].date,done:false}));
-    else{if(open.length<=40)fb++;t.steps=done;ns=schedule(open,t.deadline,t.id)}
-    t.steps=done.concat(ns);
-  }
-  lock=false;rBtn.disabled=false;rBtn.textContent='↻ Przeplanuj wszystko';save();render();
+  if(locked())return toast(BUSY_MSG);
+  // do cofnięcia zapamiętujemy tylko kroki przeplanowywanych zadań
+  const before=new Map(todo.map(t=>[t.id,JSON.stringify(t.steps)]));let fb=0,big=0;lockOn();rBtn.disabled=true;
+  try{
+    for(const [i,t] of todo.entries()){
+      rBtn.textContent=`Przeplanowuję z AI… ${i+1}/${todo.length}`;
+      const open=t.steps.filter(s=>!s.done);
+      // AI dostaje max 40 kroków; zawsze zachowujemy oryginalne nazwy, a liczba kroków musi się zgadzać
+      if(open.length>40)big++;
+      const ai=open.length<=40?await aiPlan(t,open.map(s=>s.text)):null;
+      let dates;
+      if(ai&&ai.length===open.length)dates=ai.map((s,k)=>DT.test(s.date)?s.date:open[k].date);
+      else{if(open.length<=40)fb++;dates=schedule(open,t.deadline,t.id).map(s=>s.date)}
+      // stan kroków czytamy po odpowiedzi AI: krok odhaczony w międzyczasie zostaje zrobiony i nie dostaje nowej daty
+      t.steps=t.steps.map(s=>{const k=open.indexOf(s);return k<0||s.done?s:{...s,date:dates[k]}});
+    }
+  }finally{lockOff();rBtn.disabled=false;rBtn.textContent='↻ Przeplanuj wszystko'}
+  save();render();
   const why=[fb&&`${fb} zad. prostszym algorytmem – AI nie odpowiada`,big&&`${big} zad. ma ponad 40 kroków, więc ułożono je prostszym algorytmem`].filter(Boolean);
-  toast(why.length?`Przeplanowano (${why.join('; ')}).`:'Przeplanowano z AI.','↶ Cofnij',()=>{if(lock)return toast('Poczekaj, aż skończy się planowanie.');S=norm(JSON.parse(snap));save();render();toast('Przywrócono poprzedni plan.')},15000);
+  toast(why.length?`Przeplanowano (${why.join('; ')}).`:'Przeplanowano z AI.','↶ Cofnij',()=>{
+    if(locked())return toast(BUSY_MSG);
+    // cofamy tylko daty przeplanowanych zadań; inne zmiany (nowe zadania, odhaczenia) zostają
+    S.tasks.forEach(t=>{if(!before.has(t.id))return;const old=JSON.parse(before.get(t.id));
+      t.steps=old.map(o=>({...o,done:o.done||t.steps.some(c=>c.text===o.text&&c.done)}))});
+    save();render();toast('Przywrócono poprzedni plan.')},15000);
 }
 function toggle(id,i){if(dragged)return;const t=S.tasks.find(t=>t.id===id);if(!t||!t.steps[i])return;t.steps[i].done=!t.steps[i].done;save();render()}
 function del(id){if(!confirm('Usunąć zadanie?'))return;S.tasks=S.tasks.filter(t=>t.id!==id);save();render()}
@@ -414,6 +458,7 @@ function endDrag(){
   const d=document.elementFromPoint(drag.x,drag.y)?.closest('.day');over();
   if(d){const t=S.tasks.find(t=>t.id===drag.id);if(t&&t.steps[drag.k]){t.steps[drag.k].date=d.dataset.d;save()}}
   drag=null;dragged=true;setTimeout(()=>dragged=false,400);render();
+  if(pendingPull&&!locked()){pendingPull=false;pull()}
 }
 
 // ===== Zakładka „Wszystko” + poczekalnia =====
@@ -465,23 +510,41 @@ function renderAll(){
   allList.innerHTML=h;
 }
 // ===== Kopie zapasowe =====
-const bkName=k=>{const m=k.match(/(\d{4})-(\d{2})-(\d{2})$/);return m?`${+m[3]}.${m[2]}.${m[1]}${k.includes('manual')?' (ręczna)':' – stan z początku dnia'}`:k};
+const bkName=k=>{
+  let m=k.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})/);
+  if(m){const d=new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00Z`);return`${d.getDate()}.${String(d.getMonth()+1).padStart(2,'0')}.${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')} – stan sprzed przywrócenia`}
+  m=k.match(/(\d{4})-(\d{2})-(\d{2})/);
+  return m?`${+m[3]}.${m[2]}.${m[1]}${k.includes('manual')?' (ręczna)':' – stan z początku dnia'}`:k;
+};
 async function loadBackups(){
   bkList.innerHTML='<div class="empty">Wczytuję…</div>';
   try{const r=await fetch('/api/backups',{cache:'no-store'});if(!r.ok)throw 0;const{backups:L}=await r.json();
     bkList.innerHTML=L.length?L.map(k=>`<div class="bkrow"><span>${esc(bkName(k))}</span><button class="btn2" data-k="${esc(k)}">Przywróć</button></div>`).join(''):'<div class="empty">Na razie brak kopii.</div>';
   }catch(e){bkList.innerHTML='<div class="empty">Brak połączenia – kopie są dostępne tylko online.</div>'}
 }
+// Przywracanie robi serwer: najpierw zapisuje obecny stan jako osobną kopię, więc zawsze da się wrócić (także po 15 s)
+async function restore(k){
+  if(locked())return toast(BUSY_MSG);
+  // niewysłane zmiany z tego urządzenia najpierw do chmury, żeby trafiły do kopii sprzed przywrócenia
+  for(let i=0;i<3&&meta.dirty;i++)await push();
+  if(meta.dirty&&!confirm('Nie udało się wysłać ostatnich zmian z tego urządzenia – nie trafią do kopii. Przywrócić mimo to?'))return;
+  const r=await fetch('/api/restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})});
+  if(!r.ok)throw 0;const j=await r.json();
+  epoch++;clearTimeout(pushT);cancelEdit();wReset();
+  S=norm(j.data);meta.rev=j.rev;meta.dirty=false;setBase(S);keepLocal();render();setSync('☁ Zapisano w chmurze');
+  if(bk.open)loadBackups();
+  return j.undoKey;
+}
 bk.addEventListener('toggle',()=>{if(bk.open)loadBackups()});
 bkList.addEventListener('click',async e=>{
-  const k=e.target.closest('[data-k]')?.dataset.k;if(!k||lock)return;
-  if(!confirm(`Przywrócić dane z kopii: ${bkName(k)}?\nObecne dane zostaną zastąpione (możesz to cofnąć).`))return;
-  try{const r=await fetch('/api/backups?key='+encodeURIComponent(k),{cache:'no-store'});if(!r.ok)throw 0;const j=await r.json();if(!j.data)throw 0;
-    const snap=JSON.stringify(S);cancelEdit();wReset();S=norm(j.data);save();render();
-    toast('Przywrócono kopię.','↶ Cofnij',()=>{if(lock)return toast('Poczekaj, aż skończy się planowanie.');S=norm(JSON.parse(snap));save();render();toast('Cofnięto przywrócenie.')},15000);
-  }catch(e){toast('Nie udało się pobrać kopii.')}
+  const k=e.target.closest('[data-k]')?.dataset.k;if(!k)return;
+  if(!confirm(`Przywrócić dane z kopii: ${bkName(k)}?\nObecny stan zostanie zapisany jako osobna kopia, więc zawsze można do niego wrócić.`))return;
+  try{
+    const undo=await restore(k);if(undo===undefined)return;
+    toast('Przywrócono kopię.',undo?'↶ Cofnij':null,async()=>{try{await restore(undo);toast('Cofnięto przywrócenie.')}catch(e){toast('Nie udało się cofnąć – użyj kopii „stan sprzed przywrócenia”.')}},15000);
+  }catch(e){toast('Nie udało się przywrócić kopii (brak połączenia?).')}
 });
-function tab(x){if(x!=='list'&&fromWait&&!editId&&!lock)cancelEdit();cal.hidden=x!=='cal';list.hidden=x!=='list';all.hidden=x!=='all';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list');tAll.classList.toggle('on',x==='all')}
+function tab(x){if(x!=='list'&&fromWait&&!editId&&!locked())cancelEdit();cal.hidden=x!=='cal';list.hidden=x!=='list';all.hidden=x!=='all';tCal.classList.toggle('on',x==='cal');tList.classList.toggle('on',x==='list');tAll.classList.toggle('on',x==='all')}
 function addSubj(){const n=nSub.value.trim();if(!n)return;if(!Object.hasOwn(S.colors,n)){const used=Object.values(S.colors);let c=COLORS.findIndex((_,i)=>!used.includes(i));S.colors[n]=c<0?0:c;save()}nSub.value='';render()}
 function delSubj(n){
   const k=S.tasks.filter(t=>t.subject===n).length+S.wait.filter(w=>w.subject===n).length;

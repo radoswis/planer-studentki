@@ -1,3 +1,4 @@
+import { DurableObject } from 'cloudflare:workers';
 const MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const WD = ['niedziela', 'poniedziałek', 'wtorek', 'środa', 'czwartek', 'piątek', 'sobota'];
@@ -6,14 +7,17 @@ const MAX_DATA = 1_000_000; // limit rozmiaru danych w chmurze (1 MB)
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
-    if (url.pathname === '/api/data') return data(req, env);
+    // Dane i przywracanie idą przez jeden Durable Object – sprawdzenie wersji i zapis są atomowe i zawsze aktualne
+    if (url.pathname === '/api/data' || (url.pathname === '/api/restore' && req.method === 'POST'))
+      return env.STORE.get(env.STORE.idFromName('main')).fetch(req);
     if (url.pathname === '/api/backups' && req.method === 'GET') return backups(url, env);
     if (url.pathname === '/api/plan' && req.method === 'POST') return plan(req, env);
     return env.ASSETS.fetch(req);
   }
 };
 
-const BACKUP_DAYS = 30; // automatyczne kopie dzienne trzymamy 30 dni
+const BACKUP_DAYS = 30; // automatyczne kopie trzymamy 30 dni
+const BACKUP_KEY = /^backup-[\w-]+$/;
 
 // Porządkuje dane: tylko znane pola, poprawne typy, daty RRRR-MM-DD, id liczbowe.
 // Dzięki temu nic z chmury nie wstrzyknie kodu do strony. (Ta sama funkcja jest w index.html)
@@ -39,45 +43,83 @@ function clean(d) {
   };
 }
 
-// Dane planera w chmurze (Cloudflare KV) – wspólne dla wszystkich urządzeń
-async function data(req, env) {
-  if (req.method === 'GET') {
-    const v = await env.DATA.get('state');
-    return json(v ? JSON.parse(v) : { data: null, rev: 0 }, 200, { 'Cache-Control': 'no-store' });
+// Dane planera – jeden obiekt dla wszystkich urządzeń. Kopia "state" w KV jest utrzymywana jako lustro
+// (kopia bezpieczeństwa i możliwość cofnięcia wersji aplikacji), ale źródłem prawdy jest Durable Object.
+export class Store extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    // pierwsze uruchomienie: przenieś dane z KV (inne żądania czekają, aż to się skończy)
+    ctx.blockConcurrencyWhile(async () => {
+      if ((await ctx.storage.get('state')) === undefined) {
+        const raw = await env.DATA.get('state');
+        await ctx.storage.put('state', raw ? JSON.parse(raw) : null);
+      }
+    });
   }
-  if (req.method === 'PUT' || req.method === 'POST') {
-    const body = await req.text();
-    if (body.length > MAX_DATA) return json({ error: 'za duże dane' }, 413);
-    let d, base;
-    try { ({ data: d, base } = JSON.parse(body)); } catch { return json({ error: 'zły JSON' }, 400); }
-    if (!d || typeof d !== 'object' || !Array.isArray(d.tasks)) return json({ error: 'złe dane' }, 400);
-    const curRaw = await env.DATA.get('state');
-    const cur = curRaw ? JSON.parse(curRaw) : null;
-    // Ktoś (inne urządzenie) zapisał nowszą wersję – klient musi najpierw połączyć zmiany
-    if (base != null && cur && cur.data && cur.rev > Number(base)) return json({ error: 'conflict', ...cur }, 409);
-    // Kopia zapasowa: pierwszy zapis danego dnia odkłada poprzedni stan
-    if (cur && cur.data) {
-      const key = 'backup-auto-' + new Date().toISOString().slice(0, 10);
-      if (!(await env.DATA.get(key))) await env.DATA.put(key, curRaw, { expirationTtl: BACKUP_DAYS * 86400 });
+  state() { return this.ctx.storage.get('state'); }
+  async write(data, why) {
+    const ttl = { expirationTtl: BACKUP_DAYS * 86400 };
+    let cur = await this.state(), undoKey = null;
+    if (why === 'restore' && cur?.data) { // stan sprzed przywrócenia najpierw trafia do osobnej kopii (do cofnięcia)
+      undoKey = 'backup-restore-' + new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+      await this.env.DATA.put(undoKey, JSON.stringify(cur), ttl);
+      cur = await this.state();
     }
-    const rev = Math.max(Date.now(), (cur?.rev || 0) + 1);
-    await env.DATA.put('state', JSON.stringify({ data: clean(d), rev }));
-    return json({ rev });
+    const next = { data: clean(data), rev: Math.max(Date.now(), (cur?.rev || 0) + 1) };
+    await this.ctx.storage.put('state', next); // od odczytu do zapisu bez przeplatania z innymi żądaniami
+    // lustro w KV – gdy się nie uda (np. limit zapisów), dane i tak są bezpieczne w Durable Object
+    const mirror = this.env.DATA.put('state', JSON.stringify(next)).catch(() => {});
+    if (cur?.data) {
+      const day = new Date().toISOString().slice(0, 10);
+      if ((await this.ctx.storage.get('backupDay')) !== day) { // pierwszy zapis dnia odkłada poprzedni stan
+        try { await this.env.DATA.put('backup-auto-' + day, JSON.stringify(cur), ttl); await this.ctx.storage.put('backupDay', day); } catch {}
+      }
+    }
+    await mirror;
+    return { ...next, undoKey };
   }
-  return json({ error: 'method' }, 405);
+  async fetch(req) {
+    const url = new URL(req.url);
+    if (url.pathname === '/api/restore') {
+      let key;
+      try { ({ key } = await req.json()); } catch { return json({ error: 'zły JSON' }, 400); }
+      if (typeof key !== 'string' || !BACKUP_KEY.test(key)) return json({ error: 'zły klucz' }, 400);
+      const raw = await this.env.DATA.get(key);
+      const b = raw ? JSON.parse(raw) : null;
+      if (!b?.data) return json({ error: 'brak kopii' }, 404);
+      const r = await this.write(b.data, 'restore');
+      return json({ data: r.data, rev: r.rev, undoKey: r.undoKey }, 200, { 'Cache-Control': 'no-store' });
+    }
+    if (req.method === 'GET') return json((await this.state()) || { data: null, rev: 0 }, 200, { 'Cache-Control': 'no-store' });
+    if (req.method === 'PUT' || req.method === 'POST') {
+      const body = await req.text();
+      if (body.length > MAX_DATA) return json({ error: 'Za dużo danych – usuń stare zadania, aby zapisywać w chmurze.' }, 413);
+      let d, base;
+      try { ({ data: d, base } = JSON.parse(body)); } catch { return json({ error: 'zły JSON' }, 400); }
+      if (!d || typeof d !== 'object' || !Array.isArray(d.tasks)) return json({ error: 'złe dane' }, 400);
+      const cur = await this.state();
+      // Inne urządzenie zapisało nowszą wersję – klient musi najpierw połączyć zmiany
+      if (base != null && cur?.data && cur.rev > Number(base)) return json({ error: 'conflict', ...cur }, 409);
+      const r = await this.write(d);
+      return json({ rev: r.rev });
+    }
+    return json({ error: 'method' }, 405);
+  }
 }
 
 // Kopie zapasowe: lista (GET /api/backups) i jedna kopia (GET /api/backups?key=...)
 async function backups(url, env) {
   const key = url.searchParams.get('key');
   if (key) {
-    if (!/^backup-[\w-]+$/.test(key)) return json({ error: 'zły klucz' }, 400);
+    if (!BACKUP_KEY.test(key)) return json({ error: 'zły klucz' }, 400);
     const v = await env.DATA.get(key);
     return v ? json(JSON.parse(v), 200, { 'Cache-Control': 'no-store' }) : json({ error: 'brak' }, 404);
   }
   const { keys } = await env.DATA.list({ prefix: 'backup-' });
-  return json({ backups: keys.map(k => k.name).sort().reverse() }, 200, { 'Cache-Control': 'no-store' });
+  return json({ backups: keys.map(k => k.name).sort((a, b) => stamp(b).localeCompare(stamp(a))) }, 200, { 'Cache-Control': 'no-store' });
 }
+// data z nazwy kopii, do sortowania od najnowszej
+const stamp = k => (k.match(/\d{4}-\d{2}-\d{2}(T[\d-]+)?/) || [''])[0];
 
 async function plan(req, env) {
   try {
@@ -110,7 +152,8 @@ Zasady domyślne (gdy studentka nie prosi inaczej):
 - najpierw materiał, potem nauka/przygotowanie, na końcu powtórka (dzień–dwa przed terminem),
 - max 2 kroki dziennie z tego zadania, rozkładaj równomiernie, omijaj dni oznaczone jako zajęte jeśli to możliwe,
 - trudniejsze rzeczy daj wcześniej i więcej czasu,
-- nazwy kroków po polsku, max 60 znaków, bez dat w nazwie.
+- nazwy kroków po polsku, max 60 znaków, bez dat w nazwie,
+- ŁĄCZNIE najwyżej 25 kroków (przy dużym materiale łącz rzeczy w większe kroki).
 ${redate ? 'Kroki są JUŻ ustalone – NIE zmieniaj ich nazw, liczby ani kolejności, tylko przypisz każdemu dzień (kolejne kroki nie mogą mieć wcześniejszej daty niż poprzednie).\n' : ''}Używaj WYŁĄCZNIE dat z podanej listy dni (przy dalekim terminie lista jest przerzedzona – to normalne, rozłóż pracę na cały okres). Odpowiedz WYŁĄCZNIE poprawnym JSON, bez komentarzy: {"steps":[{"text":"...","date":"RRRR-MM-DD"}]}`;
     const prompt = `${title ? `Zadanie: ${title}\n` : ''}Przedmiot: ${subject}
 Termin (deadline): ${deadline} ${WD[new Date(deadline + 'T12:00:00Z').getUTCDay()]}
@@ -120,12 +163,10 @@ ${desc}
 """
 ${redate ? `Kroki do rozplanowania (w tej kolejności):\n${given.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n` : ''}Dostępne dni (dziś = pierwszy):
 ${cal.join('\n')}`;
-    const r = await env.AI.run(MODEL, { messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], max_tokens: 2500, temperature: 0.3 });
+    const r = await env.AI.run(MODEL, { messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], max_tokens: 3000, temperature: 0.3 });
     const raw = typeof r.response === 'string' ? r.response : JSON.stringify(r.response);
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (!m) return json({ error: 'no plan' }, 422);
     const clamp = d => (d < today ? today : d > last ? (last < today ? today : last) : d);
-    let steps = (JSON.parse(m[0]).steps || []).filter(s => s && typeof s.text === 'string' && DATE.test(s.date));
+    let steps = parseSteps(raw).filter(s => s && typeof s.text === 'string' && s.text.trim() && DATE.test(s.date));
     if (redate) {
       if (steps.length !== given.length) return json({ error: 'no plan' }, 422);
       // zachowaj oryginalne nazwy i kolejność, daty nie mogą się cofać
@@ -134,11 +175,24 @@ ${cal.join('\n')}`;
       return json({ steps });
     }
     steps = steps.map(s => ({ text: s.text.slice(0, 80), date: clamp(s.date) })).sort((a, b) => a.date.localeCompare(b.date));
-    if (!steps.length || steps.length > 30) return json({ error: 'no plan' }, 422);
+    if (!steps.length) return json({ error: 'no plan' }, 422);
+    // za dużo kroków: zostaw 30, równomiernie z całego planu, zawsze z ostatnimi (powtórka przed terminem)
+    if (steps.length > 30) { const n = steps.length; steps = Array.from({ length: 30 }, (_, i) => steps[Math.round(i * (n - 1) / 29)]); }
     return json({ steps });
   } catch (e) {
     return json({ error: 'ai failed' }, 502);
   }
+}
+
+// Odczyt kroków z odpowiedzi AI; gdy JSON jest ucięty/zepsuty, wyciąga pojedyncze kompletne kroki
+function parseSteps(raw) {
+  try {
+    const m = raw.match(/\{[\s\S]*\}/);
+    const j = m && JSON.parse(m[0]);
+    if (j && Array.isArray(j.steps)) return j.steps;
+  } catch {}
+  const re = /\{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"date"\s*:\s*"(\d{4}-\d{2}-\d{2})"\s*\}/g;
+  return [...raw.matchAll(re)].map(m => { try { return { text: JSON.parse(`"${m[1]}"`), date: m[2] }; } catch { return null; } }).filter(Boolean);
 }
 
 const json = (o, s = 200, h = {}) => new Response(JSON.stringify(o), { status: s, headers: { 'Content-Type': 'application/json', ...h } });
