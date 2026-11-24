@@ -153,6 +153,8 @@ async function plan(req, env) {
       return `${d} ${WD[new Date(d + 'T12:00:00Z').getUTCDay()]}${b ? ` (zajęte: ${b})` : ''}`;
     });
     if (!cal.length) cal.push(`${today} ${WD[new Date(today + 'T12:00:00Z').getUTCDay()]}`);
+    // Długi termin (np. egzamin za kilka miesięcy): więcej kroków i wyraźna prośba o rozłożenie na cały okres
+    const long = total > 60, maxSteps = long ? 40 : 25;
 
     // Tryb "przeplanuj": kroki już istnieją, AI tylko dobiera im dni
     const redate = Array.isArray(given) && given.length > 0;
@@ -168,7 +170,10 @@ Zasady domyślne (gdy studentka nie prosi inaczej):
 - max 2 kroki dziennie z tego zadania, rozkładaj równomiernie, omijaj dni oznaczone jako zajęte jeśli to możliwe,
 - trudniejsze rzeczy daj wcześniej i więcej czasu,
 - nazwy kroków po polsku, max 60 znaków, bez dat w nazwie,
-${redate ? '' : '- ŁĄCZNIE najwyżej 25 kroków (przy dużym materiale łącz rzeczy w większe kroki).\n'}${redate ? 'Kroki są JUŻ ustalone – NIE zmieniaj ich nazw, liczby ani kolejności, tylko przypisz każdemu dzień (kolejne kroki nie mogą mieć wcześniejszej daty niż poprzednie).\n' : ''}Używaj WYŁĄCZNIE dat z podanej listy dni (przy dalekim terminie lista jest przerzedzona – to normalne, rozłóż pracę na cały okres). Odpowiedz WYŁĄCZNIE poprawnym JSON, bez komentarzy: {"steps":[{"text":"...","date":"RRRR-MM-DD"}]}`;
+${redate ? '' : `- ŁĄCZNIE najwyżej ${maxSteps} kroków (przy dużym materiale łącz rzeczy w większe kroki).\n`}${long ? `- Termin jest daleko (${total} dni, ok. ${Math.round(total / 7)} tygodni): rozłóż kroki równomiernie na CAŁY ten okres – mniej więcej co tydzień, aż do terminu, z powtórkami po drodze i na końcu. Nie zostawiaj miesięcy bez pracy, chyba że studentka prosi inaczej.\n` : ''}${redate ? `Kroki są JUŻ ustalone (${given.length}) – przypisz każdemu dzień, w tej samej kolejności (kolejne kroki nie mogą mieć wcześniejszej daty niż poprzednie). Lista "dates" ma mieć DOKŁADNIE ${given.length} dat.\n` : ''}Używaj WYŁĄCZNIE dat z podanej listy dni (przy dalekim terminie lista jest przerzedzona – to normalne, rozłóż pracę na cały okres).
+W polu "own_schedule" wpisz true, jeśli studentka sama określiła, KIEDY ma pracować w czasie (np. "zacznij w marcu", "skończ materiał do kwietnia", "w lutym przerwa"), inaczej false.
+W polu "avoid" wypisz dni tygodnia, których studentka prosi unikać (np. "nie w weekendy" → ["sobota","niedziela"], "w środy pracuję" → ["środa"]); pusta lista, jeśli nie ma takich próśb.
+Odpowiedz WYŁĄCZNIE poprawnym JSON, bez komentarzy: ${redate ? '{"own_schedule":false,"avoid":["..."],"dates":["RRRR-MM-DD", ...]}' : '{"own_schedule":false,"avoid":["..."],"steps":[{"text":"...","date":"RRRR-MM-DD"}]}'}`;
     const prompt = `${title ? `Zadanie: ${title}\n` : ''}Przedmiot: ${subject}
 Termin (deadline): ${deadline} ${WD[new Date(deadline + 'T12:00:00Z').getUTCDay()]}
 Opis od studentki:
@@ -180,22 +185,100 @@ ${cal.join('\n')}`;
     const r = await env.AI.run(MODEL, { messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], max_tokens: 3000, temperature: 0.3 });
     const raw = typeof r.response === 'string' ? r.response : JSON.stringify(r.response);
     const clamp = d => (d < today ? today : d > last ? (last < today ? today : last) : d);
-    let steps = parseSteps(raw).filter(s => s && typeof s.text === 'string' && s.text.trim() && DATE.test(s.date));
+    const ai = parseAI(raw, desc), avoid = ai.avoid;
+    // dni, których studentka prosi unikać, egzekwuje serwer (AI czasem je ignoruje);
+    // równomierne rozłożenie pomijamy, gdy studentka sama określiła ramy czasowe
+    const finish = list => fixDays(ai.ownSchedule ? list : spread(list, today, last, busy, avoid), today, last, avoid, busy);
+    let steps = ai.steps.filter(s => s && typeof s.text === 'string' && s.text.trim() && DATE.test(s.date));
     if (redate) {
-      if (steps.length !== given.length) return json({ error: 'no plan' }, 422);
-      // zachowaj oryginalne nazwy i kolejność, daty nie mogą się cofać
-      let prev = today;
-      steps = given.map((text, i) => { const d = clamp(steps[i].date); prev = d < prev ? prev : d; return { text, date: prev }; });
-      return json({ steps });
+      let ds = (ai.dates.length ? ai.dates : steps.map(s => s.date)).map(clamp).sort();
+      // za mało dat (np. ucięta odpowiedź) – klient użyje prostego algorytmu
+      if (!ds.length || ds.length < given.length / 2) return json({ error: 'no plan' }, 422);
+      // AI podało inną liczbę dat – interpolujemy między jego datami, zachowując rozkład w czasie
+      if (ds.length !== given.length) {
+        const n = ds.length, m = given.length, at = i => new Date(ds[i] + 'T12:00:00Z').getTime();
+        ds = given.map((_, i) => {
+          const p = m === 1 ? 0 : i * (n - 1) / (m - 1), a = Math.floor(p), b = Math.ceil(p);
+          return new Date(at(a) + (at(b) - at(a)) * (p - a)).toISOString().slice(0, 10);
+        });
+      }
+      return json({ steps: finish(given.map((text, i) => ({ text, date: ds[i] }))) });
     }
     steps = steps.map(s => ({ text: s.text.slice(0, 80), date: clamp(s.date) })).sort((a, b) => a.date.localeCompare(b.date));
     if (!steps.length) return json({ error: 'no plan' }, 422);
-    // za dużo kroków: zostaw 30, równomiernie z całego planu, zawsze z ostatnimi (powtórka przed terminem)
-    if (steps.length > 30) { const n = steps.length; steps = Array.from({ length: 30 }, (_, i) => steps[Math.round(i * (n - 1) / 29)]); }
-    return json({ steps });
+    // za dużo kroków: zostaw limit, równomiernie z całego planu, zawsze z ostatnimi (powtórka przed terminem)
+    const cap = maxSteps;
+    if (steps.length > cap) { const n = steps.length; steps = Array.from({ length: cap }, (_, i) => steps[Math.round(i * (n - 1) / (cap - 1))]); }
+    return json({ steps: finish(steps) });
   } catch (e) {
     return json({ error: 'ai failed' }, 502);
   }
+}
+
+const dow = d => new Date(d + 'T12:00:00Z').getUTCDay();
+// Przy długim terminie AI lubi upchnąć wszystko w pierwszych tygodniach i zostawić miesiące pustki.
+// Gdy w planie jest przerwa dłuższa niż 35 dni, rozkładamy kroki (w tej samej kolejności) równomiernie od dziś
+// do 2 tygodni przed terminem; kroki z ostatnich 2 tygodni (powtórka) zostają. Omijamy dni zajęte i te, o które prosi studentka.
+function spread(steps, today, last, busy, avoid) {
+  const days = (a, b) => Math.round((new Date(b) - new Date(a)) / 864e5);
+  if (days(today, last) < 60 || steps.length < 3) return steps;
+  // przerwy: od dziś do pierwszego kroku, między krokami i od ostatniego kroku do terminu
+  const ds = [today, ...steps.map(s => s.date), last];
+  if (Math.max(...ds.slice(1).map((d, i) => days(ds[i], d))) <= 35) return steps;
+  const tailStart = addD(last, -13), end = addD(tailStart, -1), span = days(today, end);
+  let body = steps.filter(s => s.date < tailStart), tail = steps.filter(s => s.date >= tailStart);
+  // AI zostawiło prawie wszystko na ostatnie 2 tygodnie – na końcu zostają tylko 2 ostatnie kroki (powtórka)
+  if (body.length < steps.length / 2) { body = steps.slice(0, -2); tail = steps.slice(-2); }
+  const ok = d => d >= today && d <= end && !avoid.has(dow(d)) && !(busy && Number(busy[d]) > 0);
+  let prev = today;
+  const out = body.map((s, i) => {
+    const base = addD(today, body.length === 1 ? 0 : Math.round(i * span / (body.length - 1)));
+    let date = base;
+    for (const o of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6]) { const d = addD(base, o); if (ok(d)) { date = d; break; } }
+    if (date < prev) date = prev;
+    prev = date;
+    return { ...s, date };
+  });
+  return out.concat(tail);
+}
+
+// Przesuwa kroki z dni, których studentka chce unikać, na najbliższy dozwolony dzień; kolejność dat nie może się cofać
+// Przy przesuwaniu: nie więcej niż 2 kroki dziennie z tego zadania, najpierw dni wolne od innych zadań
+function fixDays(steps, today, last, avoid, busy) {
+  const n = {}, isBusy = d => busy && typeof busy === 'object' && Number(busy[d]) > 0;
+  let prev = today;
+  return steps.map(s => {
+    let date = s.date < prev ? prev : s.date;
+    const bad = d => avoid.has(dow(d)) || (n[d] || 0) >= 2;
+    if (bad(date)) {
+      const cands = [];
+      for (let o = 0; o <= 14; o++) for (const x of o ? [o, -o] : [0]) { const d = addD(date, x); if (d >= prev && d <= last && !bad(d)) cands.push(d); }
+      date = cands.find(d => !isBusy(d)) || cands[0] || date;
+    }
+    n[date] = (n[date] || 0) + 1;
+    prev = date;
+    return { ...s, date };
+  });
+}
+
+// Odpowiedź AI: kroki, daty (tryb przeplanowania) i dni tygodnia do unikania
+// nazwa dnia (dowolna forma: "soboty", "sroda", "pt", "weekend") -> numery dni tygodnia
+const plain = t => String(t).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ł/g, 'l');
+const DAY_STEMS = [[0, /^(niedz|ndz|nd$)/], [1, /^(pon|pn$)/], [2, /^(wt)/], [3, /^(sr)/], [4, /^(czw|cz$)/], [5, /^(pi|pt$)/], [6, /^(sob|sb$)/]];
+const dayNums = name => { const w = plain(name).replace(/[^a-z]/g, ''); return /^weekend/.test(w) ? [6, 0] : DAY_STEMS.filter(([, re]) => re.test(w)).map(([i]) => i); };
+// czy opis studentki w ogóle wspomina dany dzień (chroni przed zmyśleniem przez AI)
+const DESC_STEMS = { 0: /niedziel|weekend/, 1: /poniedzial/, 2: /wtor|wtork/, 3: /srod|sroda/, 4: /czwart/, 5: /piat|piatk/, 6: /sobot|weekend/ };
+function parseAI(raw, desc = '') {
+  let j = null;
+  try { const m = raw.match(/\{[\s\S]*\}/); j = m && JSON.parse(m[0]); } catch {}
+  const names = Array.isArray(j?.avoid) ? j.avoid : ((raw.match(/"avoid"\s*:\s*\[([^\]]*)\]/) || [])[1] || '').split(',');
+  const d = plain(desc);
+  const avoid = new Set(names.flatMap(dayNums).filter(i => DESC_STEMS[i].test(d)));
+  if (avoid.size >= 7) avoid.clear(); // nie da się unikać wszystkich dni
+  const ownSchedule = j ? j.own_schedule === true : /"own_schedule"\s*:\s*true/.test(raw);
+  const dates = Array.isArray(j?.dates) ? j.dates.filter(d => typeof d === 'string' && DATE.test(d))
+    : !j && /"dates"/.test(raw) ? (raw.match(/\d{4}-\d{2}-\d{2}/g) || []) : [];
+  return { avoid, dates, ownSchedule, steps: parseSteps(raw) };
 }
 
 // Odczyt kroków z odpowiedzi AI; gdy JSON jest ucięty/zepsuty, wyciąga pojedyncze kompletne kroki
